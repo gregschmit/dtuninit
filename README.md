@@ -11,6 +11,7 @@ packets between the client and the GRE IP endpoint.
 
 - Modify watch logic to reload when interfaces change (needed for being a reasonable daemon).
 - Implement subcommands so it can be started, but also used as a tool to manage the clients file.
+- Add ubus support to support conversion of clients with radius attributes to clients file entries.
 - Implement GRE over UDP to support NAT.
 - Implement VXLAN.
 - Implement L2TPv3.

@@ -25,6 +25,7 @@ OBJFILES_USR = \
 	src/dtuninit/main.o \
 	src/shared.o \
 	src/dtuninit/bpf_state.o \
+	src/dtuninit/bpf_state/clients_file.o \
 	src/dtuninit/list.o \
 	src/dtuninit/log.o \
 	src/dtuninit/watch.o
@@ -85,4 +86,4 @@ build_static: docker_build
 
 .PHONY: clean
 clean:
-	rm -f dtuninit_bpf.o dtuninit **/*.o
+	rm -rf dtuninit_bpf.o dtuninit src/dtuninit/*.o

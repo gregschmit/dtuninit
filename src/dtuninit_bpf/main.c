@@ -96,14 +96,14 @@ struct vlan_hdr {
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_DEVICES);
+    __uint(max_entries, MAX_CLIENTS);
     __uint(key_size, ETH_ALEN);
     __uint(value_size, sizeof(Client));
 } client_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_DEVICES);  // Would never be larger than the amount of clients.
+    __uint(max_entries, MAX_CLIENTS);  // Would never be larger than the amount of clients.
     __type(key, struct in_addr);
     __type(value, IPCfg);
 } ip_cfg_map SEC(".maps");
@@ -201,7 +201,7 @@ static inline int xdp_encapsulate(struct xdp_md *ctx, Client *client) {
         // Ensure client->ifindex is in the ifindexes array.
         bool found = false;
         bool inserted = false;
-        for (unsigned i = 0; i < MAX_INTERFACES; i++) {
+        for (unsigned i = 0; i < MAX_IFS; i++) {
             if (vlan_cfg->ifindexes[i] == client->ifindex) {
                 // Already present, so nothing to do.
                 found = true;
@@ -495,7 +495,7 @@ int dtuninit_tci(struct __sk_buff *skb) {
 
             // Broadcast to all interfaces in the VLAN config.
             TCX_DBGV("Decap broadcast on VLAN %d.", md->data.decap.vlan);
-            for (unsigned i = 0; i < MAX_INTERFACES && vlan_cfg->ifindexes[i]; i++) {
+            for (unsigned i = 0; i < MAX_IFS && vlan_cfg->ifindexes[i]; i++) {
                 TCX_DBGV("CLONE; Decap to ifindex %d.", vlan_cfg->ifindexes[i]);
                 bpf_clone_redirect(skb, vlan_cfg->ifindexes[i], 0);
             }

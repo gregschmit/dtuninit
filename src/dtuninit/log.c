@@ -8,7 +8,8 @@
 
 #include "log.h"
 
-#define ENABLE_COLOR() if (COLOR) { fprintf(stderr, "\033[1;31m"); }
+#define ENABLE_RED() if (COLOR) { fprintf(stderr, "\033[1;31m"); }
+#define ENABLE_YELLOW() if (COLOR) { fprintf(stderr, "\033[1;33m"); }
 #define DISABLE_COLOR() if (COLOR) { fprintf(stderr, "\033[0m"); }
 
 bool DEBUG = false;
@@ -24,7 +25,7 @@ void log_info(const char *msg, ...) {
 }
 
 void log_error(const char *msg, ...) {
-    ENABLE_COLOR()
+    ENABLE_RED()
     va_list args;
     va_start(args, msg);
     vfprintf(stderr, msg, args);
@@ -35,7 +36,7 @@ void log_error(const char *msg, ...) {
 }
 
 void log_errno(const char *label) {
-    ENABLE_COLOR()
+    ENABLE_RED()
     fprintf(stderr, "(%s) %s\n", label, strerror(errno));
     DISABLE_COLOR()
 }
@@ -43,7 +44,7 @@ void log_errno(const char *label) {
 void dbg(const char *msg, ...) {
     if (!DEBUG) { return; }
 
-    ENABLE_COLOR()
+    ENABLE_YELLOW()
     va_list args;
     va_start(args, msg);
     vfprintf(stderr, msg, args);
@@ -55,7 +56,7 @@ void dbg(const char *msg, ...) {
 void dbg_errno(const char *label) {
     if (!DEBUG) { return; }
 
-    ENABLE_COLOR()
+    ENABLE_YELLOW()
     fprintf(stderr, "(%s) %s\n", label, strerror(errno));
     DISABLE_COLOR()
 }

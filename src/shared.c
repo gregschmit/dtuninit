@@ -5,6 +5,7 @@
  * for the userspace daemon. Therefore, use of standard library is allowed.
  */
 
+#include <netinet/ether.h>
 #include <string.h>
 
 #include "shared.h"

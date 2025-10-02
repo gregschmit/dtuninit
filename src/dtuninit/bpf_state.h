@@ -5,30 +5,41 @@
 
 #include <bpf/libbpf.h>
 
+#include "../shared.h"
 #include "list.h"
 
 typedef struct {
+    // These properties are set once, when opening the state.
+    char clients_path[PATH_MAX];
+    unsigned n_input_ifs;
+    char input_ifs[MAX_IFS][MAX_IF_NAME_LEN];
     struct bpf_object *obj;
+    uint8_t cycle;  // For removing stale map entries efficiently.
 
-    unsigned num_ifs;
-    unsigned *ifindexes;
-    struct bpf_link **links;
-
-    uint8_t cycle;  // For removing stale map entries.
+    // These properties are set for each reload.
+    unsigned n_ifs;
+    unsigned ifindexes[MAX_IFS];
+    char ifs[MAX_IFS][MAX_IF_NAME_LEN];
+    unsigned n_links;
+    struct bpf_link *links[(MAX_IFS * 2)];  // XDP + TCI per interface.
 } BPFState;
 
-void bpf_state__close(BPFState *state);
-BPFState *bpf_state__open(char *bpf_path, char **ifs);
+void bpf_state__close_links(BPFState *s);
+void bpf_state__close(BPFState *s);
+BPFState *bpf_state__open(char *bpf_path, char *clients_path, char **input_ifs);
+bool bpf_state__reload_bpf(BPFState *s);
+bool bpf_state__reload_clients(BPFState *s);
 
-struct bpf_map *bpf_state__get_client_map(BPFState *state);
-struct bpf_map *bpf_state__get_ip_cfg_map(BPFState *state);
-struct bpf_map *bpf_state__get_vlan_cfg_map(BPFState *state);
-void bpf_state__clear_client_map(BPFState *state);
-void bpf_state__clear_ip_cfg_map(BPFState *state);
-void bpf_state__clear_vlan_cfg_map(BPFState *state);
-void bpf_state__remove_stale_clients(BPFState *state, List *clients);
-void bpf_state__remove_stale_ip_cfgs(BPFState *state, List *ip_cfgs);
-unsigned bpf_state__get_num_clients(BPFState *state);
-unsigned bpf_state__get_num_ip_cfgs(BPFState *state);
+struct bpf_program *bpf_state__get_xdp_program(BPFState *s);
+struct bpf_program *bpf_state__get_tci_program(BPFState *s);
+
+struct bpf_map *bpf_state__get_client_map(BPFState *s);
+struct bpf_map *bpf_state__get_ip_cfg_map(BPFState *s);
+struct bpf_map *bpf_state__get_vlan_cfg_map(BPFState *s);
+void bpf_state__clear_client_map(BPFState *s);
+void bpf_state__clear_ip_cfg_map(BPFState *s);
+void bpf_state__clear_vlan_cfg_map(BPFState *s);
+void bpf_state__remove_stale_clients(BPFState *s, List *clients);
+void bpf_state__remove_stale_ip_cfgs(BPFState *s, List *ip_cfgs);
 
 #endif  // BPF_STATE_H

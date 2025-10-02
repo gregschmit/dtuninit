@@ -45,8 +45,9 @@ typedef _Bool bool;
 
 #endif  // __BPF__
 
-#define MAX_DEVICES 1024
-#define MAX_INTERFACES 32
+#define MAX_CLIENTS 1024
+#define MAX_IFS 32
+#define MAX_IF_NAME_LEN 16  // Must be at least IFNAMSIZ (16).
 
 typedef enum {
     TUN_PROTO_GRE = 0,
@@ -99,7 +100,7 @@ typedef struct {
 
 typedef struct {
     uint16_t vlan;
-    unsigned ifindexes[MAX_INTERFACES];
+    unsigned ifindexes[MAX_IFS];
 } VLANCfg;
 
 #ifndef __BPF__

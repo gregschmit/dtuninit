@@ -1,8 +1,12 @@
+/*
+ * This module manages the lifecycle of the BPF programs, updating the shared BPF maps, and
+ * providing reload hooks.
+ */
+
+#include <arpa/inet.h>
 #include <errno.h>
 #include <ifaddrs.h>
 #include <net/if.h>
-#include <netinet/ether.h>
-#include <netinet/in.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,231 +16,369 @@
 #include <bpf/libbpf.h>
 
 #include "../shared.h"
+#include "list.h"
 #include "log.h"
 
 #include "bpf_state.h"
+#include "bpf_state/clients_file.h"
 
-void bpf_state__close(BPFState *state) {
-    if (!state) { return; }
+void bpf_state__close_links(BPFState *s) {
+    if (!s) { return; }
 
-    if (state->ifindexes) {
-        free(state->ifindexes);
+    for (unsigned i = 0; i < s->n_links; i++) {
+        bpf_link__destroy(s->links[i]);
     }
-
-    if (state->links) {
-        int res = 0;
-        for (unsigned i = 0; i < state->num_ifs * 2; i++) {
-            if (state->links[i]) {
-                if ((res = bpf_link__destroy(state->links[i]))) {
-                    log_error("Failed to destroy BPF link (%d).", res);
-                }
-            }
-        }
-        free(state->links);
-    }
-
-    if (state->obj) {
-        bpf_object__close(state->obj);
-    }
-
-    free(state);
+    s->n_links = 0;
 }
 
-BPFState *bpf_state__open(char *bpf_path, char **specified_ifs) {
-    BPFState *state = calloc(1, sizeof(BPFState));
-    if (!state) {
+void bpf_state__close(BPFState *s) {
+    if (!s) { return; }
+
+    bpf_state__close_links(s);
+
+    if (s->obj) {
+        bpf_object__close(s->obj);
+    }
+
+    free(s);
+}
+
+BPFState *bpf_state__open(char *bpf_path, char *clients_path, char **input_ifs) {
+    BPFState *s = calloc(1, sizeof(BPFState));
+    if (!s) {
         log_errno("calloc");
         log_error("Failed to allocate memory for BPF state.");
         return NULL;
     }
 
-    char **ifs = NULL;
-    unsigned num_ifs = 0;
-    struct ifaddrs *ifaddr = NULL;
-    if (specified_ifs) {
-        while (num_ifs < MAX_INTERFACES && specified_ifs[num_ifs]) { num_ifs++; }
-        ifs = specified_ifs;
-    } else {
-        if (!(ifs = malloc(MAX_INTERFACES * sizeof(*ifs)))) {
-            log_errno("malloc");
-            log_error("Failed to allocate memory for interface names.");
-            goto failure;
+    // Copy the Clients path.
+    snprintf(s->clients_path, sizeof(s->clients_path), "%s", clients_path);
+
+    // Copy the input interfaces.
+    if (input_ifs && input_ifs[0]) {
+        unsigned n = 0;
+        while (n < MAX_IFS && input_ifs[n]) { n++; }
+        s->n_input_ifs = n;
+        for (unsigned i = 0; i < n; i++) {
+            snprintf(s->input_ifs[i], sizeof(s->input_ifs[i]), "%s", input_ifs[i]);
         }
-
-        if (getifaddrs(&ifaddr) == -1) {
-            log_errno("getifaddrs");
-            ifaddr = NULL;  // Just to be safe.
-        } else {
-            for (struct ifaddrs *ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
-                if (num_ifs >= MAX_INTERFACES) { break; }
-                if (ifa->ifa_addr == NULL) { continue; }
-
-                // Only consider L2 interfaces.
-                if (ifa->ifa_addr->sa_family != AF_PACKET) { continue; }
-
-                // Cast to sockaddr_ll to access hardware type.
-                struct sockaddr_ll *sll = (struct sockaddr_ll *)ifa->ifa_addr;
-
-                // Skip loopback and non-ethernet interfaces.
-                if (sll->sll_hatype != ARPHRD_ETHER) { continue; }
-
-                // Check if we already have this interface.
-                bool found = false;
-                for (unsigned i = 0; i < num_ifs; i++) {
-                    if (strcmp(ifs[i], ifa->ifa_name) == 0) {
-                        found = true;
-                        break;
-                    }
-                }
-                if (found) { continue; }
-
-                // Add this interface name to the list.
-                ifs[num_ifs] = ifa->ifa_name;
-                num_ifs++;
-            }
-        }
-    }
-
-    if (!num_ifs) {
-        log_error("No Ethernet interfaces available to attach to.");
-        goto failure;
-    }
-    state->num_ifs = num_ifs;
-
-    // Allocate memory for interface indexes.
-    if (!(state->ifindexes = calloc(num_ifs, sizeof(*state->ifindexes)))) {
-        log_errno("calloc");
-        log_error("Failed to allocate memory for interface indexes.");
-        goto failure;
-    }
-
-    // Allocate memory for links (number of ifs * number of programs).
-    if (!(state->links = calloc(num_ifs * 2, sizeof(*state->links)))) {
-        log_errno("calloc");
-        log_error("Failed to allocate memory for links.");
-        goto failure;
     }
 
     // Open and load the BPF object file.
-    if (!(state->obj = bpf_object__open(bpf_path))) {
+    if (!(s->obj = bpf_object__open(bpf_path))) {
         log_errno("bpf_object__open");
         log_error("Failed to open BPF object file: %s", bpf_path);
-        goto failure;
+        bpf_state__close(s);
+        return NULL;
     }
 
     // Load the BPF object into the kernel.
-    if (bpf_object__load(state->obj)) {
+    if (bpf_object__load(s->obj)) {
         log_errno("bpf_object__load");
         log_error("Failed to load BPF object.");
-        goto failure;
+        bpf_state__close(s);
+        return NULL;
     }
 
-    // Find the BPF programs.
-    struct bpf_program *prog_xdp = bpf_object__find_program_by_name(state->obj, "dtuninit_xdp");
-    if (!prog_xdp) {
-        log_error("Failed to find dtuninit_xdp.");
-        goto failure;
+    // Ensure the BPF programs exist.
+    if (!bpf_state__get_xdp_program(s)) {
+        log_error("Failed to find XDP program.");
+        bpf_state__close(s);
+        return NULL;
     }
-    struct bpf_program *prog_tci = bpf_object__find_program_by_name(state->obj, "dtuninit_tci");
-    if (!prog_tci) {
-        log_error("Failed to find dtuninit_tci.");
-        goto failure;
+    if (!bpf_state__get_tci_program(s)) {
+        log_error("Failed to find TCI program.");
+        bpf_state__close(s);
+        return NULL;
     }
 
     // Find the Client map and clear it.
-    struct bpf_map *client_map = bpf_state__get_client_map(state);
+    struct bpf_map *client_map = bpf_state__get_client_map(s);
     if (!client_map) {
         log_error("Failed to find Client BPF map.");
-        goto failure;
+        bpf_state__close(s);
+        return NULL;
     }
-    bpf_state__clear_client_map(state);
+    bpf_state__clear_client_map(s);
 
     // Find the IP Config map and clear it.
-    struct bpf_map *ip_cfg_map = bpf_state__get_ip_cfg_map(state);
+    struct bpf_map *ip_cfg_map = bpf_state__get_ip_cfg_map(s);
     if (!ip_cfg_map) {
         log_error("Failed to find IP Config BPF map.");
-        goto failure;
+        bpf_state__close(s);
+        return NULL;
     }
-    bpf_state__clear_ip_cfg_map(state);
+    bpf_state__clear_ip_cfg_map(s);
 
     // Find the VLAN Config map and clear it.
-    struct bpf_map *vlan_cfg_map = bpf_state__get_vlan_cfg_map(state);
+    struct bpf_map *vlan_cfg_map = bpf_state__get_vlan_cfg_map(s);
     if (!vlan_cfg_map) {
         log_error("Failed to find VLAN Config BPF map.");
-        goto failure;
+        bpf_state__close(s);
+        return NULL;
     }
-    bpf_state__clear_vlan_cfg_map(state);
+    bpf_state__clear_vlan_cfg_map(s);
+
+    // Perform initial reload to setup links.
+    bpf_state__reload_bpf(s);
+
+    return s;
+}
+
+static bool bpf_state__reload_ifs(BPFState *s) {
+    if (!s) { return false; }
+
+    // Clear existing interfaces.
+    s->n_ifs = 0;
+
+    // Handle case where interfaces are provided as input.
+    if (s->n_input_ifs) {
+        // Copy valid input interfaces to state.
+        for (unsigned i = 0; i < s->n_input_ifs; i++) {
+            // Get ifindex.
+            unsigned ifindex = if_nametoindex(s->input_ifs[i]);
+            if (!ifindex) {
+                log_errno("if_nametoindex");
+                log_error("Failed to find interface %s.", s->input_ifs[i]);
+                continue;
+            }
+
+            // Skip if ifindex already exists.
+            bool found = false;
+            for (unsigned j = 0; j < s->n_ifs; j++) {
+                if (s->ifindexes[j] == ifindex) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) { continue; }
+
+            // Add this interface index/name to the list.
+            s->ifindexes[s->n_ifs] = ifindex;
+            snprintf(s->ifs[s->n_ifs], sizeof(s->ifs[s->n_ifs]), "%s", s->input_ifs[i]);
+            s->n_ifs++;
+        }
+
+        return s->n_ifs;
+    }
+
+    struct ifaddrs *ifaddr = NULL;
+    if (getifaddrs(&ifaddr)) {
+        log_errno("getifaddrs");
+        log_error("Failed to get network interfaces.");
+        return false;
+    }
+
+    for (struct ifaddrs *ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (s->n_ifs >= MAX_IFS) { break; }
+        if (ifa->ifa_addr == NULL) { continue; }
+
+        // Only consider L2 interfaces.
+        if (ifa->ifa_addr->sa_family != AF_PACKET) { continue; }
+
+        // Cast to sockaddr_ll to access hardware type.
+        struct sockaddr_ll *sll = (struct sockaddr_ll *)ifa->ifa_addr;
+
+        // Skip loopback and non-ethernet interfaces.
+        if (sll->sll_hatype != ARPHRD_ETHER) { continue; }
+
+        // Get ifindex.
+        unsigned ifindex = if_nametoindex(ifa->ifa_name);
+        if (!ifindex) {
+            log_errno("if_nametoindex");
+            log_error("Failed to find interface %s.", ifa->ifa_name);
+            continue;
+        }
+
+        // Skip if ifindex already exists.
+        bool found = false;
+        for (unsigned i = 0; i < s->n_ifs; i++) {
+            if (s->ifindexes[i] == ifindex) {
+                found = true;
+                break;
+            }
+        }
+        if (found) { continue; }
+
+        // Add this interface index/name to the list.
+        s->ifindexes[s->n_ifs] = ifindex;
+        snprintf(s->ifs[s->n_ifs], sizeof(s->ifs[s->n_ifs]), "%s", ifa->ifa_name);
+        s->n_ifs++;
+    }
+    freeifaddrs(ifaddr);
+
+    return s->n_ifs;
+}
+
+bool bpf_state__reload_bpf(BPFState *s) {
+    if (!s || !s->obj) { return false; }
+
+    if (!bpf_state__reload_ifs(s)) {
+        log_error("No Ethernet interfaces available to attach to.");
+        bpf_state__close_links(s);
+        return false;
+    }
+
+    // Close links after reloading interfaces, for performance.
+    bpf_state__close_links(s);
+
+    // Get handles for the BPF programs.
+    struct bpf_program *prog_xdp = bpf_state__get_xdp_program(s);
+    if (!prog_xdp) {
+        log_error("Failed to find XDP program.");
+        return false;
+    }
+    struct bpf_program *prog_tci = bpf_state__get_tci_program(s);
+    if (!prog_tci) {
+        log_error("Failed to find TCI program.");
+        return false;
+    }
 
     // Attach the BPF programs to each interface.
-    unsigned successful_attachments = 0;
-    for (unsigned i = 0; i < num_ifs; i++) {
-        state->ifindexes[i] = if_nametoindex(ifs[i]);
-        if (state->ifindexes[i] == 0) {
-            log_errno("if_nametoindex");
-            log_error("Failed to find interface %s.", ifs[i]);
-            continue;
-        }
-
-        unsigned xdp_i = i;
-        state->links[xdp_i] = bpf_program__attach_xdp(prog_xdp, state->ifindexes[i]);
-        if (state->links[xdp_i]) {
-            log_info("Attached XDP to interface %s (ifindex %d).", ifs[i], state->ifindexes[i]);
-            successful_attachments++;
+    for (unsigned i = 0; i < s->n_ifs; i++) {
+        // Attach XDP program.
+        s->links[s->n_links] = bpf_program__attach_xdp(prog_xdp, s->ifindexes[i]);
+        if (s->links[s->n_links]) {
+            log_info("Attached XDP to interface %s (ifindex %d).", s->ifs[i], s->ifindexes[i]);
+            s->n_links++;
         } else {
             log_errno("bpf_program__attach_xdp");
-            log_error("Failed to attach XDP to interface %s.", ifs[i]);
+            log_error("Failed to attach XDP to interface %s.", s->ifs[i]);
             continue;
         }
 
-        unsigned tci_i = num_ifs + i;
-        state->links[tci_i] = bpf_program__attach_tcx(prog_tci, state->ifindexes[i], NULL);
-        if (state->links[tci_i]) {
-            log_info("Attached TCI to interface %s (ifindex %d).", ifs[i], state->ifindexes[i]);
-            successful_attachments++;
+        // Attach TCI program.
+        s->links[s->n_links] = bpf_program__attach_tcx(prog_tci, s->ifindexes[i], NULL);
+        if (s->links[s->n_links]) {
+            log_info("Attached TCI to interface %s (ifindex %d).", s->ifs[i], s->ifindexes[i]);
+            s->n_links++;
         } else {
             log_errno("bpf_program__attach_tcx");
-            log_error("Failed to attach TCI to interface %s.", ifs[i]);
+            log_error("Failed to attach TCI to interface %s.", s->ifs[i]);
             continue;
         }
     }
 
-    if (successful_attachments == 0) {
+    if (s->n_links == 0) {
         log_info("Failed to attach BPF programs to any interface.");
-        goto failure;
+        return false;
     }
 
-    // Success, cleanup.
-    goto cleanup;
-
-    // Failure, ensure state is closed and NULL, then fall through to cleanup.
-    failure:
-    bpf_state__close(state);
-    state = NULL;
-
-    // Always cleanup and return state.
-    cleanup:
-    if (ifs && !specified_ifs) { free(ifs); }
-    if (ifaddr) { freeifaddrs(ifaddr); }
-    return state;
+    return true;
 }
 
-struct bpf_map *bpf_state__get_client_map(BPFState *state) {
-    if (!state || !state->obj) { return NULL; }
-    return bpf_object__find_map_by_name(state->obj, "client_map");
+bool bpf_state__reload_clients(BPFState *s) {
+    if (!s) { return false; }
+
+    // Get the map objects.
+    struct bpf_map *client_map = bpf_state__get_client_map(s);
+    if (!client_map) {
+        log_error("Failed to get Client map.");
+        return false;
+    }
+    struct bpf_map *ip_cfg_map = bpf_state__get_ip_cfg_map(s);
+    if (!ip_cfg_map) {
+        log_error("Failed to get IP Config map.");
+        return false;
+    }
+
+    // Create client and IP config lists.
+    List *clients = list__new(
+        sizeof(Client), sizeof(uint8_t) * ETH_ALEN, (list__key_eq_t)client__key_eq
+    );
+    if (!clients) { return false; }
+    List *ip_cfgs = list__new(
+        sizeof(IPCfg), sizeof(struct in_addr), (list__key_eq_t)ip_cfg__key_eq
+    );
+    if (!ip_cfgs) {
+        list__free(clients);
+        return false;
+    }
+
+    // Bump the state cycle.
+    s->cycle++;
+
+    // Parse map file to populate the lists.
+    bpf_state__parse_clients(s, clients, ip_cfgs);
+    if (!clients->length) {
+        list__free(clients);
+        list__free(ip_cfgs);
+        return false;
+    }
+    if (!ip_cfgs->length) {
+        list__free(clients);
+        list__free(ip_cfgs);
+        return false;
+    }
+
+    // Update the IP config map.
+    for (size_t i = 0; i < ip_cfgs->length; i++) {
+        IPCfg ip_cfg = ((IPCfg *)ip_cfgs->items)[i];
+
+        if (bpf_map__update_elem(
+            ip_cfg_map, &ip_cfg.peer_ip, sizeof(ip_cfg.peer_ip), &ip_cfg, sizeof(ip_cfg), BPF_ANY
+        )) {
+            log_error("Failed to update IP map for GRE IP: %s", inet_ntoa(ip_cfg.peer_ip));
+            continue;
+        }
+    }
+
+    // Update the Client map.
+    for (size_t i = 0; i < clients->length; i++) {
+        Client client = ((Client *)clients->items)[i];
+        if (bpf_map__update_elem(
+            client_map, &client.mac, sizeof(client.mac), &client, sizeof(client), BPF_ANY
+        )) {
+            log_error(
+                "Failed to update Client map for MAC: %02x:%02x:%02x:%02x:%02x:%02x",
+                client.mac[0],
+                client.mac[1],
+                client.mac[2],
+                client.mac[3],
+                client.mac[4],
+                client.mac[5]
+            );
+            continue;
+        }
+    }
+
+    // Remove stale entries.
+    bpf_state__remove_stale_clients(s, clients);
+    bpf_state__remove_stale_ip_cfgs(s, ip_cfgs);
+
+    list__free(clients);
+    list__free(ip_cfgs);
+
+    return true;
 }
 
-struct bpf_map *bpf_state__get_ip_cfg_map(BPFState *state) {
-    if (!state || !state->obj) { return NULL; }
-    return bpf_object__find_map_by_name(state->obj, "ip_cfg_map");
+struct bpf_program *bpf_state__get_xdp_program(BPFState *s) {
+    if (!s || !s->obj) { return NULL; }
+    return bpf_object__find_program_by_name(s->obj, "dtuninit_xdp");
 }
 
-struct bpf_map *bpf_state__get_vlan_cfg_map(BPFState *state) {
-    if (!state || !state->obj) { return NULL; }
-    return bpf_object__find_map_by_name(state->obj, "vlan_cfg_map");
+struct bpf_program *bpf_state__get_tci_program(BPFState *s) {
+    if (!s || !s->obj) { return NULL; }
+    return bpf_object__find_program_by_name(s->obj, "dtuninit_tci");
 }
 
-void bpf_state__clear_client_map(BPFState *state) {
-    struct bpf_map *client_map = bpf_state__get_client_map(state);
+struct bpf_map *bpf_state__get_client_map(BPFState *s) {
+    if (!s || !s->obj) { return NULL; }
+    return bpf_object__find_map_by_name(s->obj, "client_map");
+}
+
+struct bpf_map *bpf_state__get_ip_cfg_map(BPFState *s) {
+    if (!s || !s->obj) { return NULL; }
+    return bpf_object__find_map_by_name(s->obj, "ip_cfg_map");
+}
+
+struct bpf_map *bpf_state__get_vlan_cfg_map(BPFState *s) {
+    if (!s || !s->obj) { return NULL; }
+    return bpf_object__find_map_by_name(s->obj, "vlan_cfg_map");
+}
+
+void bpf_state__clear_client_map(BPFState *s) {
+    struct bpf_map *client_map = bpf_state__get_client_map(s);
     if (!client_map) { return; }
 
     uint8_t key[ETH_ALEN], next_key[ETH_ALEN];
@@ -273,8 +415,8 @@ void bpf_state__clear_client_map(BPFState *state) {
     }
 }
 
-void bpf_state__clear_ip_cfg_map(BPFState *state) {
-    struct bpf_map *ip_cfg_map = bpf_state__get_ip_cfg_map(state);
+void bpf_state__clear_ip_cfg_map(BPFState *s) {
+    struct bpf_map *ip_cfg_map = bpf_state__get_ip_cfg_map(s);
     if (!ip_cfg_map) { return; }
 
     struct in_addr key, next_key;
@@ -311,8 +453,8 @@ void bpf_state__clear_ip_cfg_map(BPFState *state) {
     }
 }
 
-void bpf_state__clear_vlan_cfg_map(BPFState *state) {
-    struct bpf_map *vlan_cfg_map = bpf_state__get_vlan_cfg_map(state);
+void bpf_state__clear_vlan_cfg_map(BPFState *s) {
+    struct bpf_map *vlan_cfg_map = bpf_state__get_vlan_cfg_map(s);
     if (!vlan_cfg_map) { return; }
 
     uint16_t key, next_key;
@@ -349,10 +491,10 @@ void bpf_state__clear_vlan_cfg_map(BPFState *state) {
     }
 }
 
-void bpf_state__remove_stale_clients(BPFState *state, List *clients) {
-    if (!state || !clients) { return; }
+void bpf_state__remove_stale_clients(BPFState *s, List *clients) {
+    if (!s || !clients) { return; }
 
-    struct bpf_map *client_map = bpf_state__get_client_map(state);
+    struct bpf_map *client_map = bpf_state__get_client_map(s);
     if (!client_map) { return; }
 
     uint8_t key[ETH_ALEN], next_key[ETH_ALEN];
@@ -377,7 +519,7 @@ void bpf_state__remove_stale_clients(BPFState *state, List *clients) {
             log_error("Failed to look up client in Client map.");
             return;
         } else {
-            if (client.cycle != state->cycle) {
+            if (client.cycle != s->cycle) {
                 // Cycle doesn't match, so remove this stale entry.
                 if (bpf_map__delete_elem(client_map, key, ETH_ALEN, BPF_ANY) != 0) {
                     log_error("Failed to delete stale key from Client map.");
@@ -397,10 +539,10 @@ void bpf_state__remove_stale_clients(BPFState *state, List *clients) {
     }
 }
 
-void bpf_state__remove_stale_ip_cfgs(BPFState *state, List *ip_cfgs) {
-    if (!state || !ip_cfgs) { return; }
+void bpf_state__remove_stale_ip_cfgs(BPFState *s, List *ip_cfgs) {
+    if (!s || !ip_cfgs) { return; }
 
-    struct bpf_map *ip_cfg_map = bpf_state__get_ip_cfg_map(state);
+    struct bpf_map *ip_cfg_map = bpf_state__get_ip_cfg_map(s);
     if (!ip_cfg_map) { return; }
 
     struct in_addr key, next_key;
@@ -425,7 +567,7 @@ void bpf_state__remove_stale_ip_cfgs(BPFState *state, List *ip_cfgs) {
             log_error("Failed to look up IP config in IP Config map.");
             return;
         } else {
-            if (ip_cfg.cycle != state->cycle) {
+            if (ip_cfg.cycle != s->cycle) {
                 // Cycle doesn't match, so remove this stale entry.
                 if (bpf_map__delete_elem(ip_cfg_map, &key, sizeof(key), BPF_ANY) != 0) {
                     log_error("Failed to delete stale key from IP Config map.");
@@ -445,42 +587,42 @@ void bpf_state__remove_stale_ip_cfgs(BPFState *state, List *ip_cfgs) {
     }
 }
 
-unsigned bpf_state__get_num_clients(BPFState *state) {
-    if (!state) { return 0; }
+// static unsigned bpf_state__get_num_clients(BPFState *s) {
+//     if (!s) { return 0; }
 
-    struct bpf_map *client_map = bpf_state__get_client_map(state);
-    if (!client_map) { return 0; }
+//     struct bpf_map *client_map = bpf_state__get_client_map(s);
+//     if (!client_map) { return 0; }
 
-    uint8_t key[ETH_ALEN], next_key[ETH_ALEN];
-    unsigned count = 0;
-    int res = bpf_map__get_next_key(client_map, NULL, key, ETH_ALEN);
-    while (res == 0) {
-        count++;
-        res = bpf_map__get_next_key(client_map, key, next_key, ETH_ALEN);
-        if (res == 0) {
-            memcpy(key, next_key, ETH_ALEN);
-        }
-    }
+//     uint8_t key[ETH_ALEN], next_key[ETH_ALEN];
+//     unsigned count = 0;
+//     int res = bpf_map__get_next_key(client_map, NULL, key, ETH_ALEN);
+//     while (res == 0) {
+//         count++;
+//         res = bpf_map__get_next_key(client_map, key, next_key, ETH_ALEN);
+//         if (res == 0) {
+//             memcpy(key, next_key, ETH_ALEN);
+//         }
+//     }
 
-    return count;
-}
+//     return count;
+// }
 
-unsigned bpf_state__get_num_ip_cfgs(BPFState *state) {
-    if (!state) { return 0; }
+// static unsigned bpf_state__get_num_ip_cfgs(BPFState *s) {
+//     if (!s) { return 0; }
 
-    struct bpf_map *ip_cfg_map = bpf_state__get_ip_cfg_map(state);
-    if (!ip_cfg_map) { return 0; }
+//     struct bpf_map *ip_cfg_map = bpf_state__get_ip_cfg_map(s);
+//     if (!ip_cfg_map) { return 0; }
 
-    struct in_addr key, next_key;
-    unsigned count = 0;
-    int res = bpf_map__get_next_key(ip_cfg_map, NULL, &key, sizeof(key));
-    while (res == 0) {
-        count++;
-        res = bpf_map__get_next_key(ip_cfg_map, &key, &next_key, sizeof(next_key));
-        if (res == 0) {
-            key = next_key;
-        }
-    }
+//     struct in_addr key, next_key;
+//     unsigned count = 0;
+//     int res = bpf_map__get_next_key(ip_cfg_map, NULL, &key, sizeof(key));
+//     while (res == 0) {
+//         count++;
+//         res = bpf_map__get_next_key(ip_cfg_map, &key, &next_key, sizeof(next_key));
+//         if (res == 0) {
+//             key = next_key;
+//         }
+//     }
 
-    return count;
-}
+//     return count;
+// }

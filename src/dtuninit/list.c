@@ -1,5 +1,5 @@
 /*
- * Implementation of a dynamic homogeneous list of generic items (using void *), having O(1)
+ * This module implements a dynamic homogeneous list of generic items (using void *), having O(1)
  * amortized insertion time and O(n) search time.
  *
  * This is currently used for storing the list of clients and IP configs. The linear search time is
