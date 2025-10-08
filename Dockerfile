@@ -2,13 +2,14 @@ FROM alpine:latest
 
 RUN apk update && apk upgrade
 RUN apk add --no-cache \
-    git \
-    vim \
-    build-base \
-    gdb \
-    linux-headers \
     clang \
+    cmake \
+    build-base \
+    git \
+    gdb \
     libbpf-dev \
+    linux-headers \
+    vim \
     zlib-static \
     zstd-static
 

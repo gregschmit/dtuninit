@@ -1,3 +1,7 @@
+/*
+ * Logic for watching the clients file and network interface changes to trigger BFP mounting,
+ * unmounting, and map updates.
+ */
 #include <errno.h>
 #include <libgen.h>
 #include <limits.h>
@@ -6,9 +10,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-
 #include <sys/inotify.h>
+#include <unistd.h>
 
 #include "log.h"
 
@@ -23,16 +26,12 @@ extern volatile bool INTERRUPT;
 /*
  * Watch the specified file for changes and execute the callback when a change is detected.
  */
-bool watch(const char *map_path, callback_t callback, BPFState *state) {
-    int map_path_len = strlen(map_path);
-    if (map_path_len == 0 || map_path_len >= PATH_MAX) {
-        log_error("Invalid map path.");
-        return false;
-    }
+bool watch(BPFState *state) {
+    if (!state) { return false; }
 
-    // Extract the directory name and file name without modifying `map_path`.
-    char tmp[PATH_MAX + 1];
-    strncpy(tmp, map_path, sizeof(tmp));
+    // Extract the directory name and file name without modifying `clients_path`.
+    char tmp[PATH_MAX];
+    snprintf(tmp, sizeof(tmp), "%s", state->clients_path);
     char *fn = basename(tmp);
     char *dn = dirname(tmp);
 
@@ -51,7 +50,7 @@ bool watch(const char *map_path, callback_t callback, BPFState *state) {
 
     int wd = -1;
     int wd_is_dir = 0;
-    char buf[BUF_LEN];
+    uint8_t buf[BUF_LEN];
     while (1) {
         if (INTERRUPT) {
             dbg("Stopping watch.");
@@ -108,26 +107,27 @@ bool watch(const char *map_path, callback_t callback, BPFState *state) {
             sleep(TIMEOUT);
             continue;
         } else if (length == 0) {
-            log_error("read returned 0?!");
+            log_error("Failed to `read`: returned 0?!");
             continue;
         }
 
         // Assume positive length means buffer contains at least one event Also, assume events are
         // never fragmented.
         int offset = 0;
+        bool reload_clients = false;
         while (offset < length) {
             struct inotify_event *event = (struct inotify_event *)&buf[offset];
             if (wd_is_dir) {
                 if (event->len > 0 && strcmp(event->name, fn) == 0) {
                     if (event->mask & IN_CREATE) {
                         dbg("%s created.", event->name);
-                        callback(state, map_path);
+                        reload_clients = true;
                         inotify_rm_watch(fd, wd);
                         wd = -1;
                         break;
                     } else if (event->mask & IN_MOVED_TO) {
                         dbg("%s moved in.", event->name);
-                        callback(state, map_path);
+                        reload_clients = true;
                         inotify_rm_watch(fd, wd);
                         wd = -1;
                         break;
@@ -136,16 +136,16 @@ bool watch(const char *map_path, callback_t callback, BPFState *state) {
             } else {
                 if (event->mask & IN_MODIFY) {
                     dbg("%s modified.", fullpath);
-                    callback(state, map_path);
+                    reload_clients = true;
                 } else if (event->mask & IN_MOVE_SELF) {
                     dbg("%s moved out.", fullpath);
-                    callback(state, map_path);
+                    reload_clients = true;
                     inotify_rm_watch(fd, wd);
                     wd = -1;
                     break;
                 } else if (event->mask & IN_DELETE_SELF) {
                     dbg("%s deleted.", fullpath);
-                    callback(state, map_path);
+                    reload_clients = true;
                     inotify_rm_watch(fd, wd);
                     wd = -1;
                     break;
@@ -153,6 +153,16 @@ bool watch(const char *map_path, callback_t callback, BPFState *state) {
             }
 
             offset += EVENT_SIZE + event->len;
+        }
+
+        // Reload clients, if needed.
+        if (reload_clients) {
+            log_info("Reloading clients.");
+            if (bpf_state__reload_clients(state)) {
+                log_info("Reloaded clients successfully.");
+            } else {
+                log_error("Failed to reload clients.");
+            }
         }
     }
 

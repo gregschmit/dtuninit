@@ -1,5 +1,5 @@
 /*
- * SoftGRE Access Point BPF Programs
+ * Dynamic Tunnel Initiator: BPF Programs
  *
  * This file consists of two BPF programs, an XDP component and a TC component.
  *
@@ -29,7 +29,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 
-#include "shared.h"
+#include "../shared.h"
 
 #define ETH_BCAST_MAC {0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 #define IP_MIN_IHL 5
@@ -96,21 +96,21 @@ struct vlan_hdr {
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_DEVICES);
+    __uint(max_entries, MAX_CLIENTS);
     __uint(key_size, ETH_ALEN);
-    __uint(value_size, sizeof(Device));
-} device_map SEC(".maps");
+    __uint(value_size, sizeof(Client));
+} client_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_DEVICES);  // Would never be larger than the amount of devices.
+    __uint(max_entries, MAX_CLIENTS);  // Would never be larger than the amount of clients.
     __type(key, struct in_addr);
     __type(value, IPCfg);
 } ip_cfg_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 4096);  // VLAN IDs are 12 bits.
+    __uint(max_entries, 4096);  // VLAN IDs are 12 bits. Might use 0/4095 for special purposes.
     __type(key, uint16_t);
     __type(value, VLANCfg);
 } vlan_cfg_map SEC(".maps");
@@ -134,32 +134,31 @@ static inline __sum16 csum_fold(__wsum csum) {
 }
 
 static inline bool validate_header_bounds(void *header, void *end, int32_t header_size) {
-    // TODO: Remove cast?
-    return (void *)header + header_size <= end;
+    return header + header_size <= end;
 }
 
 // static inline void skb_update_data_ptrs(struct __sk_buff *skb, void **data, void **data_end) {
-//     *data = (void *)(long)skb->data;
-//     *data_end = (void *)(long)skb->data_end;
+//     *data = (void *)(uintptr_t)skb->data;
+//     *data_end = (void *)(uintptr_t)skb->data_end;
 // }
 
 static inline void xdp_update_data_ptrs(struct xdp_md *ctx, void **data, void **data_end) {
-    *data = (void *)(long)ctx->data;
-    *data_end = (void *)(long)ctx->data_end;
+    *data = (void *)(uintptr_t)ctx->data;
+    *data_end = (void *)(uintptr_t)ctx->data_end;
 }
 
 static inline void debug_test(struct ethhdr *eth) {
-    Device *d = bpf_map_lookup_elem(&device_map, &eth->h_source);
+    Client *d = bpf_map_lookup_elem(&client_map, &eth->h_source);
     if (d) {
         BPF_DBG(
-            "Frame from %02x:%02x:%02x:%02x:%02x:%02x (gre_ip: %pI4 vlan: %d).",
+            "Frame from %02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx (peer_ip: %pI4 vlan: %d).",
             eth->h_source[0],
             eth->h_source[1],
             eth->h_source[2],
             eth->h_source[3],
             eth->h_source[4],
             eth->h_source[5],
-            &d->gre_ip,
+            &d->peer_ip,
             d->vlan
         );
     }
@@ -167,10 +166,10 @@ static inline void debug_test(struct ethhdr *eth) {
 
 // Encapsulate a packet in outer Eth/IP/GRE headers and return an XDP action code. This is only
 // possible in XDP, as TC cannot modify the packet protocol.
-static inline int xdp_encapsulate(struct xdp_md *ctx, Device *device) {
+static inline int xdp_encapsulate(struct xdp_md *ctx, Client *client) {
     XDP_DBGV("Encapsulating.");
-    void *data = (void *)(long)ctx->data;
-    void *data_end = (void *)(long)ctx->data_end;
+    void *data = (void *)(uintptr_t)ctx->data;
+    void *data_end = (void *)(uintptr_t)ctx->data_end;
     long r;  // Return code for BPF helpers.
 
     // Get Ethernet header.
@@ -186,66 +185,66 @@ static inline int xdp_encapsulate(struct xdp_md *ctx, Device *device) {
         return XDP_DROP;
     }
 
-    // Annotate the Device's ifindex if not already set.
-    if (!device->ifindex) {
-        device->ifindex = ctx->ingress_ifindex;
-        if ((r = bpf_map_update_elem(&device_map, &eth->h_source, device, BPF_EXIST))) {
-            XDP_DBG("DROP; Failed to update device ifindex (%ld).", r);
+    // Annotate the client's ifindex (or fix if incorrect).
+    if (client->ifindex != ctx->ingress_ifindex) {
+        client->ifindex = ctx->ingress_ifindex;
+        if ((r = bpf_map_update_elem(&client_map, &eth->h_source, client, BPF_EXIST))) {
+            XDP_DBG("DROP; Failed to update client ifindex (%ld).", r);
             return XDP_DROP;
         }
     }
 
     // Ensure we have a VLAN config entry; update if necessary.
-    VLANCfg *vlan_cfg = bpf_map_lookup_elem(&vlan_cfg_map, &device->vlan);
+    VLANCfg *vlan_cfg = bpf_map_lookup_elem(&vlan_cfg_map, &client->vlan);
     if (vlan_cfg) {
-        // Ensure device->ifindex is in the ifindexes array.
+        // Ensure client->ifindex is in the ifindexes array.
         bool found = false;
         bool inserted = false;
-        for (unsigned i = 0; i < MAX_INTERFACES; i++) {
-            if (vlan_cfg->ifindexes[i] == device->ifindex) {
+        for (unsigned i = 0; i < MAX_IFS; i++) {
+            if (vlan_cfg->ifindexes[i] == client->ifindex) {
                 // Already present, so nothing to do.
                 found = true;
                 break;
             } else if (vlan_cfg->ifindexes[i] == 0) {
                 // Found an empty slot, so add it here.
-                vlan_cfg->ifindexes[i] = device->ifindex;
+                vlan_cfg->ifindexes[i] = client->ifindex;
                 inserted = true;
                 break;
             }
         }
 
         if (inserted) {
-            if ((r = bpf_map_update_elem(&vlan_cfg_map, &device->vlan, vlan_cfg, BPF_EXIST))) {
+            if ((r = bpf_map_update_elem(&vlan_cfg_map, &client->vlan, vlan_cfg, BPF_EXIST))) {
                 XDP_DBG("DROP; Failed to update VLAN config (%ld).", r);
                 return XDP_DROP;
             }
         }
 
         if (!found && !inserted) {
-            XDP_DBG("DROP; VLAN cfg ifindexes full, cannot add ifindex %d.", device->ifindex);
+            XDP_DBG("DROP; VLAN cfg ifindexes full, cannot add ifindex %d.", client->ifindex);
             return XDP_DROP;
         }
     } else {
         // Create a new VLAN cfg.
-        VLANCfg new_cfg = {.vlan = device->vlan, .ifindexes = {0}};
-        new_cfg.ifindexes[0] = device->ifindex;
-        if ((r = bpf_map_update_elem(&vlan_cfg_map, &device->vlan, &new_cfg, BPF_NOEXIST))) {
+        VLANCfg new_cfg = {.vlan = client->vlan, .ifindexes = {0}};
+        new_cfg.ifindexes[0] = client->ifindex;
+        if ((r = bpf_map_update_elem(&vlan_cfg_map, &client->vlan, &new_cfg, BPF_NOEXIST))) {
             XDP_DBG("DROP; Failed to create VLAN config (%ld).", r);
             return XDP_DROP;
         }
     }
 
-    // Get the IP config for this device.
-    IPCfg *ip_cfg = bpf_map_lookup_elem(&ip_cfg_map, &device->gre_ip);
+    // Get the IP config for this client.
+    IPCfg *ip_cfg = bpf_map_lookup_elem(&ip_cfg_map, &client->peer_ip);
     if (!ip_cfg) {
-        XDP_DBG("DROP; No IP config for gre_ip %pI4.", &device->gre_ip);
+        XDP_DBG("DROP; No IP config for peer_ip %pI4.", &client->peer_ip);
         return XDP_DROP;
     }
 
     // Expand packet to cover outer Ethernet/GRE/IP header, and inner VLAN header, if needed.
     // NOTE: Assumes we only need space for minimal IP header.
     int expand_size = sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct gre_base_hdr);
-    if (device->vlan) {
+    if (client->vlan) {
         expand_size += sizeof(struct vlan_hdr);
     }
     if ((r = bpf_xdp_adjust_head(ctx, -expand_size))) {
@@ -277,7 +276,7 @@ static inline int xdp_encapsulate(struct xdp_md *ctx, Device *device) {
     ip->ttl = DEFAULT_IP_TTL;
     ip->protocol = IPPROTO_GRE;
     ip->saddr = ip_cfg->src_ip.s_addr;
-    ip->daddr = ip_cfg->gre_ip.s_addr;
+    ip->daddr = ip_cfg->peer_ip.s_addr;
     __wsum csum = bpf_csum_diff(0, 0, (__be32 *)ip, sizeof(*ip), 0);
     ip->check = csum_fold(csum);
 
@@ -298,7 +297,7 @@ static inline int xdp_encapsulate(struct xdp_md *ctx, Device *device) {
     }
 
     // Write inner VLAN header, if needed.
-    if (device->vlan) {
+    if (client->vlan) {
         struct vlan_hdr *inner_vlan = (struct vlan_hdr *)(inner_eth + 1);
         if (!validate_header_bounds(inner_vlan, data_end, sizeof(*inner_vlan))) {
             XDP_DBG("DROP; Inner VLAN header out of bounds after expand.");
@@ -317,7 +316,7 @@ static inline int xdp_encapsulate(struct xdp_md *ctx, Device *device) {
         __builtin_memmove(inner_eth, true_inner_eth, sizeof(*inner_eth));
 
         // Now we can write the inner VLAN header, and update the inner Ethernet header's proto.
-        inner_vlan->h_vlan_TCI = bpf_htons(device->vlan);
+        inner_vlan->h_vlan_TCI = bpf_htons(client->vlan);
         inner_vlan->h_vlan_encapsulated_proto = inner_eth->h_proto;
         inner_eth->h_proto = bpf_htons(ETH_P_8021Q);
     }
@@ -328,7 +327,7 @@ static inline int xdp_encapsulate(struct xdp_md *ctx, Device *device) {
         return XDP_DROP;
     }
     xdp_update_data_ptrs(ctx, &data, &data_end);
-    void *data_meta = (void *)(long)ctx->data_meta;
+    void *data_meta = (void *)(uintptr_t)ctx->data_meta;
     Metadata *md = (Metadata *)data_meta;
     if (!validate_header_bounds(md, data, sizeof(*md))) {
         XDP_DBG("DROP; Metadata out of bounds after adjust.");
@@ -342,11 +341,11 @@ static inline int xdp_encapsulate(struct xdp_md *ctx, Device *device) {
 }
 
 static inline int xdp_decapsulate(
-    struct xdp_md *ctx, uint8_t ihl, Device *device, uint16_t vlan, struct ethhdr *untagged_eth
+    struct xdp_md *ctx, uint8_t ihl, Client *client, uint16_t vlan, struct ethhdr *untagged_eth
 ) {
     XDP_DBGV("Decapsulating.");
-    void *data = (void *)(long)ctx->data;
-    void *data_end = (void *)(long)ctx->data_end;
+    void *data = (void *)(uintptr_t)ctx->data;
+    void *data_end = (void *)(uintptr_t)ctx->data_end;
     long r;  // Return code for BPF helpers.
 
     // Shrink packet to remove outer Ethernet/IP/GRE and inner VLAN headers.
@@ -376,7 +375,7 @@ static inline int xdp_decapsulate(
         return XDP_DROP;
     }
     xdp_update_data_ptrs(ctx, &data, &data_end);
-    void *data_meta = (void *)(long)ctx->data_meta;
+    void *data_meta = (void *)(uintptr_t)ctx->data_meta;
     Metadata *md = (Metadata *)data_meta;
     if (!validate_header_bounds(md, data, sizeof(*md))) {
         XDP_DBG("DROP; Metadata out of bounds after adjust.");
@@ -385,15 +384,15 @@ static inline int xdp_decapsulate(
     md->signature = METADATA_SIG;
     md->type = METADATA_DECAP;
     md->data.decap.vlan = vlan;
-    md->data.decap.ifindex = device ? device->ifindex : 0;
+    md->data.decap.ifindex = client ? client->ifindex : 0;
 
     return XDP_PASS;
 }
 
 SEC("xdp")
 int dtuninit_xdp(struct xdp_md *ctx) {
-    void *data = (void *)(long)ctx->data;
-    void *data_end = (void *)(long)ctx->data_end;
+    void *data = (void *)(uintptr_t)ctx->data;
+    void *data_end = (void *)(uintptr_t)ctx->data_end;
 
     // Check for Ethernet header.
     struct ethhdr *eth = data;
@@ -406,9 +405,9 @@ int dtuninit_xdp(struct xdp_md *ctx) {
 
     // ENCAPSULATION:
     // If source MAC is a known client, encapsulate and pass to TC for processing.
-    Device *src_dev = bpf_map_lookup_elem(&device_map, &eth->h_source);
-    if (src_dev) {
-        return xdp_encapsulate(ctx, src_dev);
+    Client *src_client = bpf_map_lookup_elem(&client_map, &eth->h_source);
+    if (src_client) {
+        return xdp_encapsulate(ctx, src_client);
     }
 
     // DECAPSULATION:
@@ -449,9 +448,9 @@ int dtuninit_xdp(struct xdp_md *ctx) {
     }
 
     bool bcast = mac_eq(inner_eth->h_dest, (const uint8_t[])ETH_BCAST_MAC);
-    Device *dst_dev = bpf_map_lookup_elem(&device_map, &inner_eth->h_dest);
-    if (bcast || dst_dev) {
-        return xdp_decapsulate(ctx, ip->ihl, dst_dev, vlan_id, &untagged_eth);
+    Client *dst_client = bpf_map_lookup_elem(&client_map, &inner_eth->h_dest);
+    if (bcast || dst_client) {
+        return xdp_decapsulate(ctx, ip->ihl, dst_client, vlan_id, &untagged_eth);
     }
 
     return XDP_PASS;
@@ -459,8 +458,8 @@ int dtuninit_xdp(struct xdp_md *ctx) {
 
 SEC("tcx/ingress")
 int dtuninit_tci(struct __sk_buff *skb) {
-    void *data = (void *)(long)skb->data;
-    void *data_meta = (void *)(long)skb->data_meta;
+    void *data = (void *)(uintptr_t)skb->data;
+    void *data_meta = (void *)(uintptr_t)skb->data_meta;
     Metadata *md = (Metadata *)data_meta;
 
     // Pass packets without our metadata.
@@ -495,7 +494,7 @@ int dtuninit_tci(struct __sk_buff *skb) {
 
             // Broadcast to all interfaces in the VLAN config.
             TCX_DBGV("Decap broadcast on VLAN %d.", md->data.decap.vlan);
-            for (unsigned i = 0; i < MAX_INTERFACES && vlan_cfg->ifindexes[i]; i++) {
+            for (unsigned i = 0; i < MAX_IFS && vlan_cfg->ifindexes[i]; i++) {
                 TCX_DBGV("CLONE; Decap to ifindex %d.", vlan_cfg->ifindexes[i]);
                 bpf_clone_redirect(skb, vlan_cfg->ifindexes[i], 0);
             }
