@@ -27,6 +27,7 @@
 // doesn't define these. This is another weird spot where I would expect to be able to use `u32`,
 // for example, and I could with BPF CO-RE, but that has other disadvantages as mentioned above, so
 // I'm sticking to just defining the types I want to use here.
+typedef unsigned long uintptr_t;
 typedef __s32 int32_t;
 typedef __u8 uint8_t;
 typedef __u16 uint16_t;
@@ -106,12 +107,13 @@ typedef struct {
 
 #ifndef __BPF__
 const char *client__normalize_mac(const char *s);
+
 const char *client__mac_s(const Client *c);
 const char *client__protocol_s(const Client *c);
 const char *client__peer_ip_s(const Client *c);
 
 bool client__parse_mac(Client *c, const char *mac_s);
-bool client__parse_tun_config(Client *c, char *proto);
+bool client__parse_protocol(Client *c, char *proto);
 bool client__parse_peer_ip(Client *c, const char *peer_ip_s);
 bool client__parse_vlan(Client *c, int vlan);
 

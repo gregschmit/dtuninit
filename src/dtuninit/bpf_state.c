@@ -255,22 +255,22 @@ bool bpf_state__reload_interfaces(BPFState *s) {
         // Attach XDP program.
         s->links[s->n_links] = bpf_program__attach_xdp(prog_xdp, s->ifindexes[i]);
         if (s->links[s->n_links]) {
-            log_info("Attached XDP to interface %s (ifindex %d).", s->ifs[i], s->ifindexes[i]);
+            log_info("Attached XDP prog to if %s (ifindex %d).", s->ifs[i], s->ifindexes[i]);
             s->n_links++;
         } else {
             log_errno("bpf_program__attach_xdp");
-            log_error("Failed to attach XDP to interface %s.", s->ifs[i]);
+            log_error("Failed to attach XDP prog to if %s.", s->ifs[i]);
             continue;
         }
 
         // Attach TCI program.
         s->links[s->n_links] = bpf_program__attach_tcx(prog_tci, s->ifindexes[i], NULL);
         if (s->links[s->n_links]) {
-            log_info("Attached TCI to interface %s (ifindex %d).", s->ifs[i], s->ifindexes[i]);
+            log_info("Attached TC ingress prog to if %s (ifindex %d).", s->ifs[i], s->ifindexes[i]);
             s->n_links++;
         } else {
             log_errno("bpf_program__attach_tcx");
-            log_error("Failed to attach TCI to interface %s.", s->ifs[i]);
+            log_error("Failed to attach TC ingress prog to if %s.", s->ifs[i]);
             continue;
         }
     }
@@ -314,7 +314,7 @@ bool bpf_state__reload_clients(BPFState *s) {
         return false;
     }
 
-    // Bump the state cycle.
+    // Overflow is perfectly normal here.
     s->cycle++;
 
     // Parse map file to populate the lists.

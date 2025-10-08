@@ -82,11 +82,16 @@ const char *client__protocol_s(const Client *c) {
         case TUN_PROTO_GRE: {
             strcpy(proto_s, "gre");
             switch (c->tun_config.subproto.gre) {
+                case TUN_GRE_SUBPROTO_DEFAULT: {
+                    break;
+                }
                 case TUN_GRE_SUBPROTO_UDP: {
                     strcat(proto_s, "/udp");
                     break;
                 }
-                default: { break; }
+                default: {
+                    return NULL;
+                }
             }
             break;
         }
@@ -97,6 +102,9 @@ const char *client__protocol_s(const Client *c) {
         case TUN_PROTO_VXLAN: {
             strcpy(proto_s, "vxlan");
             break;
+        }
+        default: {
+            return NULL;
         }
     }
 
@@ -138,7 +146,7 @@ bool client__parse_mac(Client *c, const char *mac_s) {
     return true;
 }
 
-static char *split(const char *s, char delim) {
+static char *split(char *s, char delim) {
     char *d = strchr(s, delim);
     if (!d) { return NULL; }
     if (d == s) { return NULL; }
@@ -147,7 +155,7 @@ static char *split(const char *s, char delim) {
     return d + 1;
 }
 
-bool client__parse_tun_config(Client *c, char *proto) {
+bool client__parse_protocol(Client *c, char *proto) {
     if (!c || !proto) { return false; }
 
     // Parse the protocol/subprotocol.

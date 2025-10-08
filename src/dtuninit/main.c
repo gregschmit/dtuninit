@@ -181,8 +181,8 @@ bool client_insert() {
         list__free(clients);
         return false;
     }
-    if (!client__parse_tun_config(&client, INSERT_PROTOCOL)) {
-        log_error("Invalid tunnel config: `%s`", INSERT_PROTOCOL);
+    if (!client__parse_protocol(&client, INSERT_PROTOCOL)) {
+        log_error("Invalid protocol: `%s`", INSERT_PROTOCOL);
         bpf_state__close(state);
         list__free(clients);
         return false;
@@ -431,13 +431,15 @@ int main(int argc, char *argv[]) {
 
         char *term = getenv("TERM");
         if (
-            strstr(term, "color") ||
-            strstr(term, "xterm") ||
-            strstr(term, "screen") ||
-            strstr(term, "linux") ||
-            strstr(term, "rxvt") ||
-            strstr(term, "vt100") ||
-            strstr(term, "ansi")
+            term && (
+                strstr(term, "color") ||
+                strstr(term, "xterm") ||
+                strstr(term, "screen") ||
+                strstr(term, "linux") ||
+                strstr(term, "rxvt") ||
+                strstr(term, "vt100") ||
+                strstr(term, "ansi")
+            )
         ) {
             COLOR = true;
         }

@@ -79,11 +79,17 @@ bool list__add(List *list, const void *item) {
             new_size = INITIAL_LIST_SIZE;
         }
 
+        // Check for size overflow caused by multiplication.
+        if (new_size > SIZE_MAX / list->item_size) {
+            log_error("List allocation size overflow.");
+            return false;
+        }
+
         // Double the list size.
         List *new_items = realloc(list->items, new_size * list->item_size);
         if (!new_items) {
             log_errno("realloc");
-            log_error("Failed to allocate memory for list (%u).", new_size);
+            log_error("Failed to allocate memory for list (%zu).", new_size);
             return false;
         }
         list->items = new_items;

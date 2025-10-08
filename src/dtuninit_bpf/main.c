@@ -134,18 +134,17 @@ static inline __sum16 csum_fold(__wsum csum) {
 }
 
 static inline bool validate_header_bounds(void *header, void *end, int32_t header_size) {
-    // TODO: Remove cast?
-    return (void *)header + header_size <= end;
+    return header + header_size <= end;
 }
 
 // static inline void skb_update_data_ptrs(struct __sk_buff *skb, void **data, void **data_end) {
-//     *data = (void *)(long)skb->data;
-//     *data_end = (void *)(long)skb->data_end;
+//     *data = (void *)(uintptr_t)skb->data;
+//     *data_end = (void *)(uintptr_t)skb->data_end;
 // }
 
 static inline void xdp_update_data_ptrs(struct xdp_md *ctx, void **data, void **data_end) {
-    *data = (void *)(long)ctx->data;
-    *data_end = (void *)(long)ctx->data_end;
+    *data = (void *)(uintptr_t)ctx->data;
+    *data_end = (void *)(uintptr_t)ctx->data_end;
 }
 
 static inline void debug_test(struct ethhdr *eth) {
@@ -169,8 +168,8 @@ static inline void debug_test(struct ethhdr *eth) {
 // possible in XDP, as TC cannot modify the packet protocol.
 static inline int xdp_encapsulate(struct xdp_md *ctx, Client *client) {
     XDP_DBGV("Encapsulating.");
-    void *data = (void *)(long)ctx->data;
-    void *data_end = (void *)(long)ctx->data_end;
+    void *data = (void *)(uintptr_t)ctx->data;
+    void *data_end = (void *)(uintptr_t)ctx->data_end;
     long r;  // Return code for BPF helpers.
 
     // Get Ethernet header.
@@ -328,7 +327,7 @@ static inline int xdp_encapsulate(struct xdp_md *ctx, Client *client) {
         return XDP_DROP;
     }
     xdp_update_data_ptrs(ctx, &data, &data_end);
-    void *data_meta = (void *)(long)ctx->data_meta;
+    void *data_meta = (void *)(uintptr_t)ctx->data_meta;
     Metadata *md = (Metadata *)data_meta;
     if (!validate_header_bounds(md, data, sizeof(*md))) {
         XDP_DBG("DROP; Metadata out of bounds after adjust.");
@@ -345,8 +344,8 @@ static inline int xdp_decapsulate(
     struct xdp_md *ctx, uint8_t ihl, Client *client, uint16_t vlan, struct ethhdr *untagged_eth
 ) {
     XDP_DBGV("Decapsulating.");
-    void *data = (void *)(long)ctx->data;
-    void *data_end = (void *)(long)ctx->data_end;
+    void *data = (void *)(uintptr_t)ctx->data;
+    void *data_end = (void *)(uintptr_t)ctx->data_end;
     long r;  // Return code for BPF helpers.
 
     // Shrink packet to remove outer Ethernet/IP/GRE and inner VLAN headers.
@@ -376,7 +375,7 @@ static inline int xdp_decapsulate(
         return XDP_DROP;
     }
     xdp_update_data_ptrs(ctx, &data, &data_end);
-    void *data_meta = (void *)(long)ctx->data_meta;
+    void *data_meta = (void *)(uintptr_t)ctx->data_meta;
     Metadata *md = (Metadata *)data_meta;
     if (!validate_header_bounds(md, data, sizeof(*md))) {
         XDP_DBG("DROP; Metadata out of bounds after adjust.");
@@ -392,8 +391,8 @@ static inline int xdp_decapsulate(
 
 SEC("xdp")
 int dtuninit_xdp(struct xdp_md *ctx) {
-    void *data = (void *)(long)ctx->data;
-    void *data_end = (void *)(long)ctx->data_end;
+    void *data = (void *)(uintptr_t)ctx->data;
+    void *data_end = (void *)(uintptr_t)ctx->data_end;
 
     // Check for Ethernet header.
     struct ethhdr *eth = data;
@@ -459,8 +458,8 @@ int dtuninit_xdp(struct xdp_md *ctx) {
 
 SEC("tcx/ingress")
 int dtuninit_tci(struct __sk_buff *skb) {
-    void *data = (void *)(long)skb->data;
-    void *data_meta = (void *)(long)skb->data_meta;
+    void *data = (void *)(uintptr_t)skb->data;
+    void *data_meta = (void *)(uintptr_t)skb->data_meta;
     Metadata *md = (Metadata *)data_meta;
 
     // Pass packets without our metadata.

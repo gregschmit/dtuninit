@@ -36,8 +36,7 @@ static bool populate_ip_cfg_src_ip(IPCfg *ip_cfg) {
     }
 
     // Set up dst address.
-    struct sockaddr_in dst_addr;
-    memset(&dst_addr, 0, sizeof(dst_addr));
+    struct sockaddr_in dst_addr = {0};
     dst_addr.sin_family = AF_INET;
     dst_addr.sin_port = htons(53);  // DNS port, but any port works.
     dst_addr.sin_addr = ip_cfg->peer_ip;
@@ -50,7 +49,7 @@ static bool populate_ip_cfg_src_ip(IPCfg *ip_cfg) {
     }
 
     // Get the local address the kernel assigned.
-    struct sockaddr_in src_addr;
+    struct sockaddr_in src_addr = {0};
     socklen_t src_addr_len = sizeof(src_addr);
     if (getsockname(sockfd, (struct sockaddr*)&src_addr, &src_addr_len) < 0) {
         log_errno("getsockname");
@@ -167,6 +166,7 @@ static cJSON *read_clients_json(const char *path) {
         free(text);
         return NULL;
     }
+    text[file_size] = '\0';
 
     // Close file now that we're done with it.
     fclose(fp);
@@ -236,6 +236,12 @@ static char *format_clients_json(cJSON *json) {
 
         // Expand the buffer if needed.
         while (idx + entry_len > size) {
+            if (size > SIZE_MAX / 2) {
+                log_error("Buffer size overflow in clients JSON formatting.");
+                free(value_json);
+                free(buf);
+                return NULL;
+            }
             size *= 2;
             char *new_buf = realloc(buf, size);
             if (!new_buf) {
@@ -337,8 +343,8 @@ static bool deserialize(cJSON *client_json, Client *client) {
         log_error("Missing protocol for %s", mac_s);
         return false;
     }
-    if (!client__parse_tun_config(client, proto_json->valuestring)) {
-        log_error("Invalid tunnel config `%s` for %s", proto_json->valuestring, mac_s);
+    if (!client__parse_protocol(client, proto_json->valuestring)) {
+        log_error("Invalid protocol `%s` for %s", proto_json->valuestring, mac_s);
         return false;
     }
 
@@ -423,8 +429,11 @@ void bpf_state__clients_file__parse(BPFState *s, List *clients, List *ip_cfgs) {
 
 static void serialize(cJSON *json, Client *client) {
     // Format the MAC address as a string.
-    char mac_s[18] = "";
-    snprintf(mac_s, sizeof(mac_s), "%s", client__mac_s(client));
+    const char *mac_s = client__mac_s(client);
+    if (!mac_s) {
+        log_error("Failed to get MAC string for client.");
+        return;
+    }
 
     // Create the JSON object for this client.
     cJSON *client_json = cJSON_CreateObject();
@@ -433,28 +442,12 @@ static void serialize(cJSON *json, Client *client) {
         return;
     }
 
-    // Add the protocol/subprotocol.
-    char proto[16];
-    switch (client->tun_config.proto) {
-        case TUN_PROTO_GRE: {
-            strcpy(proto, "gre");
-            switch (client->tun_config.subproto.gre) {
-                case TUN_GRE_SUBPROTO_UDP: {
-                    strcat(proto, "/udp");
-                    break;
-                }
-                default: { break; }
-            }
-            break;
-        }
-        case TUN_PROTO_L2TP: {
-            strcpy(proto, "l2tp");
-            break;
-        }
-        case TUN_PROTO_VXLAN: {
-            strcpy(proto, "vxlan");
-            break;
-        }
+    // Add the protocol.
+    const char *proto = client__protocol_s(client);
+    if (!proto) {
+        log_error("Failed to get protocol string for %s.", mac_s);
+        cJSON_Delete(client_json);
+        return;
     }
     cJSON *proto_json = cJSON_CreateString(proto);
     if (!proto_json) {
@@ -470,14 +463,13 @@ static void serialize(cJSON *json, Client *client) {
     }
 
     // Add the peer IP.
-    char peer_ip_s[INET_ADDRSTRLEN];
-    if (!inet_ntop(AF_INET, &client->peer_ip, peer_ip_s, sizeof(peer_ip_s))) {
-        log_errno("inet_ntop");
-        log_error("Failed to convert peer IP to string for %s.", mac_s);
+    const char *peer_ip = client__peer_ip_s(client);
+    if (!peer_ip) {
+        log_error("Failed to get peer IP string for %s.", mac_s);
         cJSON_Delete(client_json);
         return;
     }
-    cJSON *peer_ip_json = cJSON_CreateString(peer_ip_s);
+    cJSON *peer_ip_json = cJSON_CreateString(peer_ip);
     if (!peer_ip_json) {
         log_error("Failed to create peer IP string for %s.", mac_s);
         cJSON_Delete(client_json);
@@ -552,8 +544,14 @@ bool bpf_state__clients_file__remove_s(BPFState *s, const char *mac_s) {
     if (!json) { return false; }
 
     // Remove the entry (along with any duplicates/variations) for this MAC address.
-    while (cJSON_HasObjectItem(json, mac_s)) {
-        cJSON_DeleteItemFromObject(json, mac_s);
+    const char *normalized_mac = client__normalize_mac(mac_s);
+    if (!normalized_mac) {
+        log_error("Invalid MAC address: `%s`", mac_s);
+        cJSON_Delete(json);
+        return false;
+    }
+    while (cJSON_HasObjectItem(json, normalized_mac)) {
+        cJSON_DeleteItemFromObject(json, normalized_mac);
     }
 
     // Write the updated JSON back to the file.
