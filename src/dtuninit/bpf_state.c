@@ -337,7 +337,7 @@ bool bpf_state__reload_clients(BPFState *s) {
         if (bpf_map__update_elem(
             ip_cfg_map, &ip_cfg.peer_ip, sizeof(ip_cfg.peer_ip), &ip_cfg, sizeof(ip_cfg), BPF_ANY
         )) {
-            log_error("Failed to update IP map for GRE IP: %s", inet_ntoa(ip_cfg.peer_ip));
+            log_error("Failed to update IP map for %s", ip_cfg__peer_ip_s(&ip_cfg));
             continue;
         }
     }
@@ -348,15 +348,7 @@ bool bpf_state__reload_clients(BPFState *s) {
         if (bpf_map__update_elem(
             client_map, &client.mac, sizeof(client.mac), &client, sizeof(client), BPF_ANY
         )) {
-            log_error(
-                "Failed to update client map for MAC: %02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx",
-                client.mac[0],
-                client.mac[1],
-                client.mac[2],
-                client.mac[3],
-                client.mac[4],
-                client.mac[5]
-            );
+            log_error("Failed to update client map for %s", client__mac_s(&client));
             continue;
         }
     }

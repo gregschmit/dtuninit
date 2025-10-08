@@ -110,7 +110,7 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 4096);  // VLAN IDs are 12 bits.
+    __uint(max_entries, 4096);  // VLAN IDs are 12 bits. Might use 0/4095 for special purposes.
     __type(key, uint16_t);
     __type(value, VLANCfg);
 } vlan_cfg_map SEC(".maps");

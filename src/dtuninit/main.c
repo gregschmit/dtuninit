@@ -234,20 +234,6 @@ bool client_remove() {
     return true;
 }
 
-bool client_dump() {
-    log_info("Clients file: `%s`.", CLIENTS_PATH);
-    BPFState *state = bpf_state__open(CLIENTS_PATH, N_IFS ? IFS_PTRS : NULL);
-    if (!state) {
-        log_error("Failed to open BPF state.");
-        return false;
-    }
-
-    bpf_state__clients_file__dump(state);
-
-    bpf_state__close(state);
-    return true;
-}
-
 void do_global_getopt(int argc, char *argv[]) {
     int ch;
     while ((ch = getopt(argc, argv, GLOBAL_GETOPT_S)) != -1) {
@@ -419,7 +405,7 @@ void do_client_insert_getopt(int argc, char *argv[]) {
                 }
                 char *endptr;
                 long vlan = strtol(optarg, &endptr, 10);
-                if (*endptr != '\0' || vlan < 1 || vlan > 4095) {
+                if (*endptr != '\0') {
                     log_error("Invalid VLAN ID: %s", optarg);
                     exit(1);
                 }
@@ -567,14 +553,6 @@ int main(int argc, char *argv[]) {
                 return 1;
             }
             success = client_remove();
-        } else if (!strcmp(client_subcommand, "dump")) {
-            do_client_getopt(argc, argv);
-            if (optind < argc) {
-                log_error("Unexpected extra positional arguments.");
-                log_info("%s", CLIENT_USAGE_S);
-                return 1;
-            }
-            success = client_dump();
         } else if (!strcmp(client_subcommand, "help")) {
             log_info("%s", CLIENT_USAGE_S);
             return 0;

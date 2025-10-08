@@ -12,7 +12,7 @@ CC = clang
 BPF_TARGET ?= bpf
 
 BPF_CFLAGS = $(COMMON_CFLAGS) -target $(BPF_TARGET)
-BPF_CFLAGS += -I/usr/include/x86_64-linux-gnu
+# BPF_CFLAGS += -I/usr/include/x86_64-linux-gnu
 
 USR_TARGET ?=
 USR_LIBS = -lbpf -lelf -lz -lzstd

@@ -105,13 +105,23 @@ typedef struct {
 } VLANCfg;
 
 #ifndef __BPF__
-char *client__mac_s(Client *c);
+const char *client__normalize_mac(const char *s);
+const char *client__mac_s(const Client *c);
+const char *client__protocol_s(const Client *c);
+const char *client__peer_ip_s(const Client *c);
+
 bool client__parse_mac(Client *c, const char *mac_s);
 bool client__parse_tun_config(Client *c, char *proto);
 bool client__parse_peer_ip(Client *c, const char *peer_ip_s);
+bool client__parse_vlan(Client *c, int vlan);
+
+// Key comparison functions for maps.
 bool client__key_eq(const uint8_t *key1, const uint8_t *key2);
 bool ip_cfg__key_eq(const struct in_addr *key1, const struct in_addr *key2);
+
 bool ip_cfg__is_valid(const IPCfg *ip_cfg);
+const char *ip_cfg__src_ip_s(const IPCfg *ip_cfg);
+const char *ip_cfg__peer_ip_s(const IPCfg *ip_cfg);
 #endif  // __BPF__
 
 #endif  // SHARED_H

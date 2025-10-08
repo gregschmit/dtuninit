@@ -107,49 +107,21 @@ static bool populate_ip_cfg_ifindex(IPCfg *ip_cfg) {
 static bool populate_ip_cfg(IPCfg *ip_cfg) {
     if (!ip_cfg || !ip_cfg->peer_ip.s_addr) { return false; }
 
-    // Determine src IP for this GRE IP.
+    // Determine src IP for this peer IP.
     if (!populate_ip_cfg_src_ip(ip_cfg)) {
-        log_error("Failed to determine src IP for GRE IP: %s", inet_ntoa(ip_cfg->peer_ip));
+        log_error("Failed to determine src IP for peer IP: %s.", ip_cfg__peer_ip_s(ip_cfg));
         ip_cfg->src_ip.s_addr = 0;
         return false;
     }
 
     // Determine ifindex.
     if (!populate_ip_cfg_ifindex(ip_cfg)) {
-        log_error("Failed to determine ifindex for src IP: %s", inet_ntoa(ip_cfg->src_ip));
+        log_error("Failed to determine ifindex for src IP: %s.", ip_cfg__src_ip_s(ip_cfg));
         ip_cfg->src_ip.s_addr = 0;
         return false;
     }
 
     return true;
-}
-
-static bool check_mac(const char *s) {
-    static const bool fmt_hex[17] = {
-        true, true, false,
-        true, true, false,
-        true, true, false,
-        true, true, false,
-        true, true, false,
-        true, true
-    };
-
-    for (unsigned i = 0; i < sizeof(fmt_hex); i++) {
-        if (!s[i]) { return false; }  // Too short.
-        if (fmt_hex[i]) {
-            // Return false if char is not 0-9 or a-z (LOWERCASE ONLY).
-            if (!((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'a' && s[i] <= 'f'))) {
-                return false;
-            }
-        } else {
-            // Return false if char is not ':'.
-            if (s[i] != ':') {
-                return false;
-            }
-        }
-    }
-
-    return s[sizeof(fmt_hex)] == '\0';  // Return false if too long.
 }
 
 static cJSON *read_clients_json(const char *path) {
@@ -217,7 +189,7 @@ static cJSON *read_clients_json(const char *path) {
     return json;
 }
 
-// Special helper to format the clients JSON with indentation and newlines. It will look like this:
+// Special helper to format the clients JSON in a readable manner. The format is:
 //   {
 //     "xx:xx:xx:xx:xx:xx": {...},
 //     ...
@@ -244,10 +216,6 @@ static char *format_clients_json(cJSON *json) {
         const char *mac_s = client_json->string;
         if (!mac_s) {
             log_error("Client has no MAC address.");
-            continue;
-        }
-        if (!check_mac(mac_s)) {
-            log_error("Invalid MAC address: `%s`", mac_s);
             continue;
         }
 
@@ -358,10 +326,6 @@ static bool deserialize(cJSON *client_json, Client *client) {
         log_error("Client has no MAC address.");
         return false;
     }
-    if (!check_mac(mac_s)) {
-        log_error("Invalid MAC address format: `%s`", mac_s);
-        return false;
-    }
     if (!client__parse_mac(client, mac_s)) {
         log_error("Invalid MAC address: `%s`", mac_s);
         return false;
@@ -378,7 +342,7 @@ static bool deserialize(cJSON *client_json, Client *client) {
         return false;
     }
 
-    // Parse and validate the peer IP.
+    // Parse the peer IP.
     cJSON *peer_ip_json = cJSON_GetObjectItemCaseSensitive(client_json, "peer_ip");
     if (!peer_ip_json || !cJSON_IsString(peer_ip_json) || !peer_ip_json->valuestring) {
         log_error("Missing peer IP for %s", mac_s);
@@ -389,18 +353,17 @@ static bool deserialize(cJSON *client_json, Client *client) {
         return false;
     }
 
-    // Parse and validate the VLAN (optional).
+    // Parse the VLAN (optional).
     cJSON *vlan_json = cJSON_GetObjectItemCaseSensitive(client_json, "vlan");
     if (vlan_json) {
         if (!cJSON_IsNumber(vlan_json)) {
             log_error("Invalid VLAN for %s: not a number", mac_s);
             return false;
         }
-        if (vlan_json->valueint < 1 || vlan_json->valueint > 4094) {
+        if (!client__parse_vlan(client, vlan_json->valueint)) {
             log_error("Invalid VLAN `%d` for %s", vlan_json->valueint, mac_s);
             return false;
         }
-        client->vlan = (uint16_t)vlan_json->valueint;
     }
 
     return true;
@@ -422,7 +385,7 @@ void bpf_state__clients_file__parse(BPFState *s, List *clients, List *ip_cfgs) {
 
         // For logging.
         const char *mac_s = client_json->string;
-        const char *peer_ip_s = inet_ntoa(client.peer_ip);
+        const char *peer_ip_s = client__peer_ip_s(&client);
 
         // Ensure there is a corresponding IP config for this client's peer IP.
         IPCfg *ip_cfg = list__find(ip_cfgs, &client.peer_ip);
@@ -458,20 +421,10 @@ void bpf_state__clients_file__parse(BPFState *s, List *clients, List *ip_cfgs) {
     cJSON_Delete(json);
 }
 
-static void serialize(cJSON *json, const Client *client) {
+static void serialize(cJSON *json, Client *client) {
     // Format the MAC address as a string.
-    char mac_s[18];
-    snprintf(
-        mac_s,
-        sizeof(mac_s),
-        "%02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx",
-        client->mac[0],
-        client->mac[1],
-        client->mac[2],
-        client->mac[3],
-        client->mac[4],
-        client->mac[5]
-    );
+    char mac_s[18] = "";
+    snprintf(mac_s, sizeof(mac_s), "%s", client__mac_s(client));
 
     // Create the JSON object for this client.
     cJSON *client_json = cJSON_CreateObject();
@@ -594,16 +547,14 @@ bool bpf_state__clients_file__insert(BPFState *s, List *clients) {
 
 bool bpf_state__clients_file__remove_s(BPFState *s, const char *mac_s) {
     if (!s || !mac_s) { return false; }
-    if (!check_mac(mac_s)) {
-        log_error("Invalid MAC address: `%s`", mac_s);
-        return false;
-    }
 
     cJSON *json = read_clients_json(s->clients_path);
     if (!json) { return false; }
 
-    // Remove the entry for this MAC address.
-    cJSON_DeleteItemFromObjectCaseSensitive(json, mac_s);
+    // Remove the entry (along with any duplicates/variations) for this MAC address.
+    while (cJSON_HasObjectItem(json, mac_s)) {
+        cJSON_DeleteItemFromObject(json, mac_s);
+    }
 
     // Write the updated JSON back to the file.
     bool success = write_clients_json(s->clients_path, json);
@@ -629,22 +580,4 @@ bool bpf_state__clients_file__remove(BPFState *s, uint8_t mac[ETH_ALEN]) {
     );
 
     return bpf_state__clients_file__remove_s(s, mac_s);
-}
-
-bool bpf_state__clients_file__dump(BPFState *s) {
-    if (!s) { return false; }
-
-    cJSON *json = read_clients_json(s->clients_path);
-    if (!json) { return false; }
-
-    char *text = cJSON_Print(json);
-    if (!text) {
-        cJSON_Delete(json);
-        return false;
-    }
-    log_info("%s", text);
-
-    free(text);
-    cJSON_Delete(json);
-    return true;
 }
