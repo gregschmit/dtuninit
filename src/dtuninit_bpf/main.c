@@ -152,7 +152,7 @@ static inline void debug_test(struct ethhdr *eth) {
     Client *d = bpf_map_lookup_elem(&client_map, &eth->h_source);
     if (d) {
         BPF_DBG(
-            "Frame from %02x:%02x:%02x:%02x:%02x:%02x (peer_ip: %pI4 vlan: %d).",
+            "Frame from %02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx (peer_ip: %pI4 vlan: %d).",
             eth->h_source[0],
             eth->h_source[1],
             eth->h_source[2],
@@ -186,8 +186,8 @@ static inline int xdp_encapsulate(struct xdp_md *ctx, Client *client) {
         return XDP_DROP;
     }
 
-    // Annotate the Client's ifindex if not already set.
-    if (!client->ifindex) {
+    // Annotate the client's ifindex (or fix if incorrect).
+    if (client->ifindex != ctx->ingress_ifindex) {
         client->ifindex = ctx->ingress_ifindex;
         if ((r = bpf_map_update_elem(&client_map, &eth->h_source, client, BPF_EXIST))) {
             XDP_DBG("DROP; Failed to update client ifindex (%ld).", r);

@@ -26,8 +26,9 @@ typedef struct {
 
 void bpf_state__close_links(BPFState *s);
 void bpf_state__close(BPFState *s);
-BPFState *bpf_state__open(char *bpf_path, char *clients_path, char **input_ifs);
-bool bpf_state__reload_bpf(BPFState *s);
+BPFState *bpf_state__open(char *clients_path, char **input_ifs);
+bool bpf_state__load_bpf(BPFState *s, const char *bpf_path);
+bool bpf_state__reload_interfaces(BPFState *s);
 bool bpf_state__reload_clients(BPFState *s);
 
 struct bpf_program *bpf_state__get_xdp_program(BPFState *s);

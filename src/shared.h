@@ -56,16 +56,17 @@ typedef enum {
 } tun_proto_t;
 
 typedef enum {
-    TUN_GRE_SUBPROTO_V0 = 0,
-    TUN_GRE_SUBPROTO_V0UDP = 1,
+    TUN_GRE_SUBPROTO_DEFAULT = 0,
+    TUN_GRE_SUBPROTO_UDP = 1,
 } tun_gre_subproto_t;
 
 typedef enum {
+    TUN_L2TP_SUBPROTO_DEFAULT = 0,
     TUN_L2TP_SUBPROTO_V3 = 0,
 } tun_l2tp_subproto_t;
 
 typedef enum {
-    TUN_VXLAN_SUBPROTO_V0 = 0,
+    TUN_VXLAN_SUBPROTO_DEFAULT = 0,
 } tun_vxlan_subproto_t;
 
 typedef struct {
@@ -104,6 +105,10 @@ typedef struct {
 } VLANCfg;
 
 #ifndef __BPF__
+char *client__mac_s(Client *c);
+bool client__parse_mac(Client *c, const char *mac_s);
+bool client__parse_tun_config(Client *c, char *proto);
+bool client__parse_peer_ip(Client *c, const char *peer_ip_s);
 bool client__key_eq(const uint8_t *key1, const uint8_t *key2);
 bool ip_cfg__key_eq(const struct in_addr *key1, const struct in_addr *key2);
 bool ip_cfg__is_valid(const IPCfg *ip_cfg);

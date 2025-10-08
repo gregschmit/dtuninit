@@ -16,3 +16,11 @@ packets between the client and the GRE IP endpoint.
 - Implement VXLAN.
 - Implement L2TPv3.
 - Add support for IPv6 endpoints.
+
+## Development
+
+Ensure you clone using the `--recurse-submodules` flag, or initialize the submodules afterwards:
+
+```sh
+git submodule update --init --recursive
+```

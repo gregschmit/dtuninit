@@ -21,25 +21,70 @@
 #include "log.h"
 #include "watch.h"
 #include "bpf_state.h"
+#include "bpf_state/clients_file.h"
 
-#define DEFAULT_CLIENTS_FN "dtuninit_clients"
+#define DEFAULT_CLIENTS_FN "dtuninit_clients.json"
 #define DEFAULT_CLIENTS_PATH "/var/run/" DEFAULT_CLIENTS_FN
 #define DEFAULT_BPF_FN "dtuninit_bpf.o"
 #define DEFAULT_BPF_PATH "/usr/bin/" DEFAULT_BPF_FN
 
 #define VERSION_S "dtuninit " VERSION
-#define USAGE_S \
-    VERSION_S "\nThe Dynamic Tunnel Initiator\n\n" \
-    "Usage: dtuninit [OPTIONS]\n\n" \
-    "Options:\n" \
+#define USAGE_HEADER_S VERSION_S "\nThe Dynamic Tunnel Initiator\n\n"
+#define GLOBAL_GETOPT_S "dh"
+#define GLOBAL_OPTIONS_S \
+    "  -d  Enable debug logging.\n" \
+    "  -h  Show usage."
+#define GLOBAL_USAGE_S USAGE_HEADER_S \
+    "Usage: dtuninit <SUBCOMMAND> <OPTIONS>\n" \
+    "\n" \
+    "Subcommands:\n" \
+    "  start     Start the BPF loader.\n" \
+    "  client    Manage the clients file.\n" \
+    "  version   Show version.\n" \
+    "  help      Show usage.\n" \
+    "\n" \
+    "Global Options:\n" GLOBAL_OPTIONS_S
+#define START_GETOPT_S GLOBAL_GETOPT_S "B:C:i:"
+#define START_OPTIONS_S \
     "  -B <FILE>  Set BPF object file (default: `" DEFAULT_BPF_FN "` from current dir or\n" \
     "             `" DEFAULT_BPF_PATH "`).\n" \
-    "  -C <FILE>  Set Clients file (default: `" DEFAULT_CLIENTS_FN "` from current dir or\n" \
-    "             `" DEFAULT_CLIENTS_PATH "`).\n" \
-    "  -d         Enable debug logging.\n" \
-    "  -i <IF>    Bind to selected interface.\n" \
-    "  -V         Show version.\n" \
-    "  -h -?      Show usage.\n"
+    "  -C <FILE>  Set clients JSON file (default: `" DEFAULT_CLIENTS_FN "` from\n" \
+    "             `current dir or `" DEFAULT_CLIENTS_PATH "`).\n" \
+    "  -i <IF>    Bind to selected interface (can be specified multiple times).\n"
+#define START_USAGE_S USAGE_HEADER_S \
+    "Usage: dtuninit start <OPTIONS>\n" \
+    "\n" \
+    "Start Options:\n" START_OPTIONS_S \
+    "\n" \
+    "Global Options:\n" GLOBAL_OPTIONS_S
+#define CLIENT_GETOPT_S GLOBAL_GETOPT_S "C:"
+#define CLIENT_OPTIONS_S \
+    "  -C <FILE>  Set clients JSON file (default: `" DEFAULT_CLIENTS_FN "` from\n" \
+    "             `current dir or `" DEFAULT_CLIENTS_PATH "`).\n"
+#define CLIENT_USAGE_S USAGE_HEADER_S \
+    "Usage: dtuninit client <SUBCOMMAND> <OPTIONS>\n" \
+    "\n" \
+    "Subcommands:\n" \
+    "  insert <MAC>  Insert a client into the clients file.\n" \
+    "  remove <MAC>  Remove a client from the clients file.\n" \
+    "  help          Show usage.\n" \
+    "\n" \
+    "Client Options:\n" CLIENT_OPTIONS_S \
+    "\n" \
+    "Global Options:\n" GLOBAL_OPTIONS_S
+#define CLIENT_INSERT_GETOPT_S CLIENT_GETOPT_S "p:P:v:"
+#define CLIENT_INSERT_OPTIONS_S \
+    "  -p <PROTOCOL>  Set the protocol (e.g., `gre`, `gre/udp`).\n" \
+    "  -P <PEER_IP>   Set the Peer IPv4 address.\n" \
+    "  -v <VLAN>      Set the VLAN ID (optional).\n"
+#define CLIENT_INSERT_USAGE_S USAGE_HEADER_S \
+    "Usage: dtuninit client insert <MAC> <OPTIONS>\n" \
+    "\n" \
+    "Client Insert Options:\n" CLIENT_INSERT_OPTIONS_S \
+    "\n" \
+    "Client Options:\n" CLIENT_OPTIONS_S \
+    "\n" \
+    "Global Options:\n" GLOBAL_OPTIONS_S
 
 volatile bool INTERRUPT = false;
 
@@ -48,23 +93,46 @@ static unsigned N_IFS = 0;
 static char IFS[MAX_IFS][MAX_IF_NAME_LEN] = {0};
 static char *IFS_PTRS[MAX_IFS + 1] = {0};  // Must be NULL-terminated.
 
+char BPF_PATH[PATH_MAX] = "";
+char CLIENTS_PATH[PATH_MAX] = "";
+
+static char *INSERT_REMOVE_MAC = NULL;
+static char *INSERT_PROTOCOL = NULL;
+static char *INSERT_PEER_IP = NULL;
+static uint16_t INSERT_VLAN = 0;
+
 void interrupt_handler(int _signum) {
     INTERRUPT = true;
 }
 
-bool start(char *bpf_path, char *clients_path) {
+bool start() {
     log_info("Registering signal handlers.");
     signal(SIGHUP, interrupt_handler);  // TODO: Consider reloading on SIGHUP.
     signal(SIGINT, interrupt_handler);
     signal(SIGTERM, interrupt_handler);
     signal(SIGQUIT, interrupt_handler);
 
-    log_info("BPF object file: `%s`.", bpf_path);
-    log_info("Clients file: `%s`.", clients_path);
+    log_info("BPF object file: `%s`.", BPF_PATH);
+    log_info("Clients file: `%s`.", CLIENTS_PATH);
     log_info("Loading BPF programs.");
-    BPFState *state = bpf_state__open(bpf_path, clients_path, N_IFS ? IFS_PTRS : NULL);
+    BPFState *state = bpf_state__open(CLIENTS_PATH, N_IFS ? IFS_PTRS : NULL);
     if (!state) {
-        log_error("Failed to load BPF state.");
+        log_error("Failed to open BPF state.");
+        return false;
+    }
+
+    if (!bpf_state__load_bpf(state, BPF_PATH)) {
+        bpf_state__close(state);
+        return false;
+    }
+
+    if (!bpf_state__reload_interfaces(state)) {
+        bpf_state__close(state);
+        return false;
+    }
+
+    if (!bpf_state__reload_clients(state)) {
+        bpf_state__close(state);
         return false;
     }
 
@@ -77,10 +145,298 @@ bool start(char *bpf_path, char *clients_path) {
     return watch_success;
 }
 
-int main(int argc, char *argv[]) {
-    char bpf_path[PATH_MAX] = "";
-    char clients_path[PATH_MAX] = "";
+bool client_insert() {
+    if (!INSERT_REMOVE_MAC) {
+        log_error("No MAC address specified.");
+        return false;
+    }
+    if (!INSERT_PROTOCOL) {
+        log_error("No protocol specified.");
+        return false;
+    }
+    if (!INSERT_PEER_IP) {
+        log_error("No peer IP specified.");
+        return false;
+    }
 
+    log_info("Clients file: `%s`.", CLIENTS_PATH);
+    BPFState *state = bpf_state__open(CLIENTS_PATH, N_IFS ? IFS_PTRS : NULL);
+    if (!state) {
+        log_error("Failed to open BPF state.");
+        return false;
+    }
+    List *clients = list__new(
+        sizeof(Client), sizeof(uint8_t) * ETH_ALEN, (list__key_eq_t)client__key_eq
+    );
+    if (!clients) {
+        log_error("Failed to create client list.");
+        bpf_state__close(state);
+        return false;
+    }
+
+    Client client = {0};
+    if (!client__parse_mac(&client, INSERT_REMOVE_MAC)) {
+        log_error("Invalid MAC address: `%s`", INSERT_REMOVE_MAC);
+        bpf_state__close(state);
+        list__free(clients);
+        return false;
+    }
+    if (!client__parse_tun_config(&client, INSERT_PROTOCOL)) {
+        log_error("Invalid tunnel config: `%s`", INSERT_PROTOCOL);
+        bpf_state__close(state);
+        list__free(clients);
+        return false;
+    }
+    if (!client__parse_peer_ip(&client, INSERT_PEER_IP)) {
+        log_error("Invalid peer IP: `%s`", INSERT_PEER_IP);
+        bpf_state__close(state);
+        list__free(clients);
+        return false;
+    }
+    client.vlan = INSERT_VLAN;
+
+    if (!list__add(clients, &client)) {
+        bpf_state__close(state);
+        list__free(clients);
+        return false;
+    }
+
+    if (!bpf_state__clients_file__insert(state, clients)) {
+        bpf_state__close(state);
+        list__free(clients);
+        return false;
+    }
+
+    bpf_state__close(state);
+    list__free(clients);
+    return true;
+}
+
+bool client_remove() {
+    if (!INSERT_REMOVE_MAC) {
+        log_error("No MAC address specified.");
+        return false;
+    }
+
+    log_info("Clients file: `%s`.", CLIENTS_PATH);
+    BPFState *state = bpf_state__open(CLIENTS_PATH, N_IFS ? IFS_PTRS : NULL);
+    if (!state) {
+        log_error("Failed to open BPF state.");
+        return false;
+    }
+
+    if (!bpf_state__clients_file__remove_s(state, INSERT_REMOVE_MAC)) {
+        bpf_state__close(state);
+        return false;
+    }
+
+    bpf_state__close(state);
+    return true;
+}
+
+bool client_dump() {
+    log_info("Clients file: `%s`.", CLIENTS_PATH);
+    BPFState *state = bpf_state__open(CLIENTS_PATH, N_IFS ? IFS_PTRS : NULL);
+    if (!state) {
+        log_error("Failed to open BPF state.");
+        return false;
+    }
+
+    bpf_state__clients_file__dump(state);
+
+    bpf_state__close(state);
+    return true;
+}
+
+void do_global_getopt(int argc, char *argv[]) {
+    int ch;
+    while ((ch = getopt(argc, argv, GLOBAL_GETOPT_S)) != -1) {
+        switch (ch) {
+            case 'd': {
+                DEBUG = true;
+                break;
+            }
+            case 'h': {
+                log_info("%s", GLOBAL_USAGE_S);
+                exit(0);
+                break;
+            }
+            default: {
+                log_error("Unknown option: %c", optopt);
+                log_info("%s", GLOBAL_USAGE_S);
+                exit(1);
+                break;
+            }
+        }
+    }
+}
+
+void do_start_getopt(int argc, char *argv[]) {
+    int ch;
+    while ((ch = getopt(argc, argv, START_GETOPT_S)) != -1) {
+        switch (ch) {
+            case 'd': {
+                DEBUG = true;
+                break;
+            }
+            case 'h': {
+                log_info("%s", START_USAGE_S);
+                exit(0);
+                break;
+            }
+            case 'B': {
+                size_t bpf_length = strlen(optarg);
+                if (bpf_length <= 0) {
+                    log_error("BPF object file path cannot be blank.");
+                    exit(1);
+                } else if (bpf_length >= sizeof(BPF_PATH)) {
+                    log_error("BPF object file path is too long.");
+                    exit(1);
+                } else {
+                    snprintf(BPF_PATH, sizeof(BPF_PATH), "%s", optarg);
+                }
+                break;
+            }
+            case 'C': {
+                size_t clients_length = strlen(optarg);
+                if (clients_length <= 0) {
+                    log_error("Clients file path cannot be blank.");
+                    exit(1);
+                } else if (clients_length >= sizeof(CLIENTS_PATH)) {
+                    log_error("Clients file path is too long.");
+                    exit(1);
+                } else {
+                    snprintf(CLIENTS_PATH, sizeof(CLIENTS_PATH), "%s", optarg);
+                }
+                break;
+            }
+            case 'i': {
+                if (optarg[0] == '\0') {
+                    log_error("Interface name cannot be blank.");
+                    exit(1);
+                }
+                if (N_IFS >= MAX_IFS) {
+                    log_error("Exceeded max interfaces (%d); ignoring %s", MAX_IFS, optarg);
+                } else {
+                    snprintf(IFS[N_IFS], sizeof(IFS[N_IFS]), "%s", optarg);
+                    IFS_PTRS[N_IFS] = IFS[N_IFS];
+                    N_IFS++;
+                }
+                break;
+            }
+            default: {
+                log_error("Unknown option: %c", optopt);
+                log_info("%s", START_USAGE_S);
+                exit(1);
+                break;
+            }
+        }
+    }
+}
+
+void do_client_getopt(int argc, char *argv[]) {
+    int ch;
+    while ((ch = getopt(argc, argv, CLIENT_GETOPT_S)) != -1) {
+        switch (ch) {
+            case 'd': {
+                DEBUG = true;
+                break;
+            }
+            case 'h': {
+                log_info("%s", CLIENT_USAGE_S);
+                exit(0);
+                break;
+            }
+            case 'C': {
+                size_t clients_length = strlen(optarg);
+                if (clients_length <= 0) {
+                    log_error("Clients file path cannot be blank.");
+                    exit(1);
+                } else if (clients_length >= sizeof(CLIENTS_PATH)) {
+                    log_error("Clients file path is too long.");
+                    exit(1);
+                } else {
+                    snprintf(CLIENTS_PATH, sizeof(CLIENTS_PATH), "%s", optarg);
+                }
+                break;
+            }
+            default: {
+                log_error("Unknown option: %c", optopt);
+                log_info("%s", CLIENT_USAGE_S);
+                exit(1);
+                break;
+            }
+        }
+    }
+}
+
+void do_client_insert_getopt(int argc, char *argv[]) {
+    int ch;
+    while ((ch = getopt(argc, argv, CLIENT_INSERT_GETOPT_S)) != -1) {
+        switch (ch) {
+            case 'd': {
+                DEBUG = true;
+                break;
+            }
+            case 'h': {
+                log_info("%s", CLIENT_INSERT_USAGE_S);
+                exit(0);
+                break;
+            }
+            case 'C': {
+                size_t clients_length = strlen(optarg);
+                if (clients_length <= 0) {
+                    log_error("Clients file path cannot be blank.");
+                    exit(1);
+                } else if (clients_length >= sizeof(CLIENTS_PATH)) {
+                    log_error("Clients file path is too long.");
+                    exit(1);
+                } else {
+                    snprintf(CLIENTS_PATH, sizeof(CLIENTS_PATH), "%s", optarg);
+                }
+                break;
+            }
+            case 'p': {
+                if (optarg[0] == '\0') {
+                    log_error("Protocol cannot be blank.");
+                    exit(1);
+                }
+                INSERT_PROTOCOL = optarg;
+                break;
+            }
+            case 'P': {
+                if (optarg[0] == '\0') {
+                    log_error("Peer IP address cannot be blank.");
+                    exit(1);
+                }
+                INSERT_PEER_IP = optarg;
+                break;
+            }
+            case 'v': {
+                if (optarg[0] == '\0') {
+                    log_error("VLAN ID cannot be blank.");
+                    exit(1);
+                }
+                char *endptr;
+                long vlan = strtol(optarg, &endptr, 10);
+                if (*endptr != '\0' || vlan < 1 || vlan > 4095) {
+                    log_error("Invalid VLAN ID: %s", optarg);
+                    exit(1);
+                }
+                INSERT_VLAN = (uint16_t)vlan;
+                break;
+            }
+            default: {
+                log_error("Unknown option: %c", optopt);
+                log_info("%s", CLIENT_INSERT_USAGE_S);
+                exit(1);
+                break;
+            }
+        }
+    }
+}
+
+int main(int argc, char *argv[]) {
     // Detect if we have a TTY that also supports color.
     if (isatty(fileno(stderr))) {
         if (getenv("COLORTERM")) {
@@ -101,34 +457,34 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Try to find BPF object file and Clients file in current directory.
+    // Try to find BPF object file and clients file in current directory.
     char cwd[PATH_MAX] = "";
     if (getcwd(cwd, sizeof(cwd))) {
         size_t cwd_len = strlen(cwd);
 
-        if (cwd_len + 1 + sizeof(DEFAULT_BPF_FN) >= sizeof(bpf_path)) {
+        if (cwd_len + 1 + sizeof(DEFAULT_BPF_FN) >= sizeof(BPF_PATH)) {
             log_error("Working directory is too long for BPF file.");
         } else {
-            snprintf(bpf_path, sizeof(bpf_path), "%s/%s", cwd, DEFAULT_BPF_FN);
-            FILE *fp = fopen(bpf_path, "r");
+            snprintf(BPF_PATH, sizeof(BPF_PATH), "%s/%s", cwd, DEFAULT_BPF_FN);
+            FILE *fp = fopen(BPF_PATH, "r");
             if (fp) {
                 fclose(fp);
             } else {
-                log_error("Working directory BPF object file could not be opened.");
-                bpf_path[0] = '\0';
+                dbg("Working directory BPF object file could not be opened.");
+                BPF_PATH[0] = '\0';
             }
         }
 
-        if (cwd_len + 1 + sizeof(DEFAULT_CLIENTS_FN) >= sizeof(clients_path)) {
-            log_error("Working directory is too long for Clients file.");
+        if (cwd_len + 1 + sizeof(DEFAULT_CLIENTS_FN) >= sizeof(CLIENTS_PATH)) {
+            log_error("Working directory is too long for clients file.");
         } else {
-            snprintf(clients_path, sizeof(clients_path), "%s/%s", cwd, DEFAULT_CLIENTS_FN);
-            FILE *fp = fopen(clients_path, "r");
+            snprintf(CLIENTS_PATH, sizeof(CLIENTS_PATH), "%s/%s", cwd, DEFAULT_CLIENTS_FN);
+            FILE *fp = fopen(CLIENTS_PATH, "r");
             if (fp) {
                 fclose(fp);
             } else {
-                log_error("Working directory Clients file could not be opened.");
-                clients_path[0] = '\0';
+                dbg("Working directory clients file could not be opened.");
+                CLIENTS_PATH[0] = '\0';
             }
         }
     } else {
@@ -136,89 +492,104 @@ int main(int argc, char *argv[]) {
         log_error("Failed to get working directory.");
     }
 
-    int ch;
-    while ((ch = getopt(argc, argv, "B:C:di:Vh?")) != -1) {
-        switch (ch) {
-            case 'B': {
-                size_t bpf_length = strlen(optarg);
-                if (bpf_length <= 0) {
-                    log_error("Invalid BPF object file path.");
-                    return 1;
-                } else if (bpf_length >= PATH_MAX) {
-                    log_error("BPF object file path is too long.");
-                    return 1;
-                } else {
-                    snprintf(bpf_path, sizeof(bpf_path), "%s", optarg);
-                }
+    // Get any prefix global options.
+    do_global_getopt(argc, argv);
 
-                break;
-            }
-            case 'C': {
-                size_t clients_length = strlen(optarg);
-                if (clients_length <= 0) {
-                    log_error("Invalid Clients file path.");
-                    return 1;
-                } else if (clients_length >= PATH_MAX) {
-                    log_error("Clients file path is too long.");
-                    return 1;
-                } else {
-                    snprintf(clients_path, sizeof(clients_path), "%s", optarg);
-                }
-
-                break;
-            }
-            case 'd': {
-                DEBUG = true;
-                break;
-            }
-            case 'i': {
-                if (N_IFS >= MAX_IFS) {
-                    log_error("Exceeded max interfaces (%d); ignoring %s", MAX_IFS, optarg);
-                } else {
-                    snprintf(IFS[N_IFS], sizeof(IFS[N_IFS]), "%s", optarg);
-                    IFS_PTRS[N_IFS] = IFS[N_IFS];
-                    N_IFS++;
-                }
-                break;
-            }
-            case 'V': {
-                log_info("%s", VERSION_S);
-                exit(0);
-                break;
-            }
-            case 'h':
-            case '?': {
-                log_info("%s", USAGE_S);
-                exit(0);
-                break;
-            }
-            default: {
-                log_error("%s", USAGE_S);
-                exit(1);
-                break;
-            }
-        }
-    }
-
-    // Set default BPF object path and Clients path if not set.
-    if (!bpf_path[0]) {
-        snprintf(bpf_path, sizeof(bpf_path), "%s", DEFAULT_BPF_PATH);
-    }
-    if (!clients_path[0]) {
-        snprintf(clients_path, sizeof(clients_path), "%s", DEFAULT_CLIENTS_PATH);
-    }
-
-    // Check if BPF object file can be read.
-    FILE *fp = fopen(bpf_path, "r");
-    if (fp == NULL) {
-        log_errno("fopen");
-        log_error("BPF object file could not be opened.");
+    // First get the subcommand.
+    if (optind >= argc) {
+        log_error("No subcommand specified.");
+        log_info("%s", GLOBAL_USAGE_S);
         return 1;
-    } else {
-        fclose(fp);
     }
+    char *subcommand = argv[optind];
+    optind += 1;  // Move past subcommand.
 
-    bool success = start(bpf_path, clients_path);
+    bool success = true;
+    if (!strcmp(subcommand, "start")) {
+        do_start_getopt(argc, argv);
+
+        if (optind < argc) {
+            log_error("Unexpected extra positional arguments.");
+            log_info("%s", START_USAGE_S);
+            return 1;
+        }
+
+        // Set default BPF object path and clients path if not set.
+        if (!BPF_PATH[0]) {
+            snprintf(BPF_PATH, sizeof(BPF_PATH), "%s", DEFAULT_BPF_PATH);
+        }
+        if (!CLIENTS_PATH[0]) {
+            snprintf(CLIENTS_PATH, sizeof(CLIENTS_PATH), "%s", DEFAULT_CLIENTS_PATH);
+        }
+
+        success = start();
+    } else if (!strcmp(subcommand, "client")) {
+        do_client_getopt(argc, argv);
+
+        if (optind >= argc) {
+            log_error("No client subcommand specified.");
+            log_info("%s", CLIENT_USAGE_S);
+            return 1;
+        }
+
+        char *client_subcommand = argv[optind];
+        optind += 1;  // Move past client subcommand.
+
+        if (!strcmp(client_subcommand, "insert")) {
+            if (optind >= argc) {
+                log_error("No MAC address specified.");
+                log_info("%s", CLIENT_INSERT_USAGE_S);
+                return 1;
+            }
+            INSERT_REMOVE_MAC = argv[optind];
+            optind += 1;  // Move past MAC address.
+
+            do_client_insert_getopt(argc, argv);
+            if (optind < argc) {
+                log_error("Unexpected extra positional arguments.");
+                log_info("%s", CLIENT_INSERT_USAGE_S);
+                return 1;
+            }
+            success = client_insert();
+        } else if (!strcmp(client_subcommand, "remove")) {
+            if (optind >= argc) {
+                log_error("No MAC address specified.");
+                log_info("%s", CLIENT_USAGE_S);
+                return 1;
+            }
+            INSERT_REMOVE_MAC = argv[optind];
+            optind += 1;  // Move past MAC address.
+
+            do_client_getopt(argc, argv);
+            if (optind < argc) {
+                log_error("Unexpected extra positional arguments.");
+                log_info("%s", CLIENT_USAGE_S);
+                return 1;
+            }
+            success = client_remove();
+        } else if (!strcmp(client_subcommand, "dump")) {
+            do_client_getopt(argc, argv);
+            if (optind < argc) {
+                log_error("Unexpected extra positional arguments.");
+                log_info("%s", CLIENT_USAGE_S);
+                return 1;
+            }
+            success = client_dump();
+        } else if (!strcmp(client_subcommand, "help")) {
+            log_info("%s", CLIENT_USAGE_S);
+            return 0;
+        } else {
+            log_error("Unknown client subcommand: `%s`.", client_subcommand);
+            log_info("%s", CLIENT_USAGE_S);
+            return 1;
+        }
+    } else if (!strcmp(subcommand, "help")) {
+        log_info("%s", GLOBAL_USAGE_S);
+    } else {
+        log_error("Unknown subcommand: `%s`.", subcommand);
+        log_info("%s", GLOBAL_USAGE_S);
+        return 1;
+    }
 
     return success ? 0 : 1;
 }

@@ -43,7 +43,7 @@ void bpf_state__close(BPFState *s) {
     free(s);
 }
 
-BPFState *bpf_state__open(char *bpf_path, char *clients_path, char **input_ifs) {
+BPFState *bpf_state__open(char *clients_path, char **input_ifs) {
     BPFState *s = calloc(1, sizeof(BPFState));
     if (!s) {
         log_errno("calloc");
@@ -51,7 +51,7 @@ BPFState *bpf_state__open(char *bpf_path, char *clients_path, char **input_ifs) 
         return NULL;
     }
 
-    // Copy the Clients path.
+    // Copy the clients path.
     snprintf(s->clients_path, sizeof(s->clients_path), "%s", clients_path);
 
     // Copy the input interfaces.
@@ -64,49 +64,57 @@ BPFState *bpf_state__open(char *bpf_path, char *clients_path, char **input_ifs) 
         }
     }
 
+    return s;
+}
+
+bool bpf_state__load_bpf(BPFState *s, const char *bpf_path) {
     // Open and load the BPF object file.
     if (!(s->obj = bpf_object__open(bpf_path))) {
         log_errno("bpf_object__open");
         log_error("Failed to open BPF object file: %s", bpf_path);
-        bpf_state__close(s);
-        return NULL;
+        return false;
     }
 
     // Load the BPF object into the kernel.
     if (bpf_object__load(s->obj)) {
         log_errno("bpf_object__load");
         log_error("Failed to load BPF object.");
-        bpf_state__close(s);
-        return NULL;
+        bpf_object__close(s->obj);
+        s->obj = NULL;
+        return false;
     }
 
     // Ensure the BPF programs exist.
     if (!bpf_state__get_xdp_program(s)) {
         log_error("Failed to find XDP program.");
-        bpf_state__close(s);
-        return NULL;
+        bpf_object__close(s->obj);
+        s->obj = NULL;
+        return false;
     }
     if (!bpf_state__get_tci_program(s)) {
         log_error("Failed to find TCI program.");
-        bpf_state__close(s);
-        return NULL;
+        bpf_object__close(s->obj);
+        s->obj = NULL;
+        return false;
     }
 
-    // Find the Client map and clear it.
+    // Find the client map and clear it.
     struct bpf_map *client_map = bpf_state__get_client_map(s);
     if (!client_map) {
-        log_error("Failed to find Client BPF map.");
-        bpf_state__close(s);
-        return NULL;
+        log_error("Failed to find client BPF map.");
+        bpf_object__close(s->obj);
+        s->obj = NULL;
+        return false;
     }
     bpf_state__clear_client_map(s);
 
-    // Find the IP Config map and clear it.
+    // Find the IP config map and clear it.
     struct bpf_map *ip_cfg_map = bpf_state__get_ip_cfg_map(s);
     if (!ip_cfg_map) {
-        log_error("Failed to find IP Config BPF map.");
-        bpf_state__close(s);
-        return NULL;
+        log_error("Failed to find IP config BPF map.");
+        bpf_object__close(s->obj);
+        s->obj = NULL;
+        return false;
     }
     bpf_state__clear_ip_cfg_map(s);
 
@@ -114,18 +122,16 @@ BPFState *bpf_state__open(char *bpf_path, char *clients_path, char **input_ifs) 
     struct bpf_map *vlan_cfg_map = bpf_state__get_vlan_cfg_map(s);
     if (!vlan_cfg_map) {
         log_error("Failed to find VLAN Config BPF map.");
-        bpf_state__close(s);
-        return NULL;
+        bpf_object__close(s->obj);
+        s->obj = NULL;
+        return false;
     }
     bpf_state__clear_vlan_cfg_map(s);
 
-    // Perform initial reload to setup links.
-    bpf_state__reload_bpf(s);
-
-    return s;
+    return true;
 }
 
-static bool bpf_state__reload_ifs(BPFState *s) {
+static bool bpf_state__reload_ifdata(BPFState *s) {
     if (!s) { return false; }
 
     // Clear existing interfaces.
@@ -162,15 +168,18 @@ static bool bpf_state__reload_ifs(BPFState *s) {
         return s->n_ifs;
     }
 
+    // Otherwise, auto-detect interfaces.
     struct ifaddrs *ifaddr = NULL;
     if (getifaddrs(&ifaddr)) {
         log_errno("getifaddrs");
         log_error("Failed to get network interfaces.");
         return false;
     }
-
     for (struct ifaddrs *ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
-        if (s->n_ifs >= MAX_IFS) { break; }
+        if (s->n_ifs >= MAX_IFS) {
+            log_error("Exceeded max interfaces (%d); ignoring remaining.", MAX_IFS);
+            break;
+        }
         if (ifa->ifa_addr == NULL) { continue; }
 
         // Only consider L2 interfaces.
@@ -210,16 +219,23 @@ static bool bpf_state__reload_ifs(BPFState *s) {
     return s->n_ifs;
 }
 
-bool bpf_state__reload_bpf(BPFState *s) {
-    if (!s || !s->obj) { return false; }
+bool bpf_state__reload_interfaces(BPFState *s) {
+    if (!s) {
+        log_error("No BPF state!");
+        return false;
+    }
+    if (!s->obj) {
+        log_error("No BPF object loaded!");
+        return false;
+    }
 
-    if (!bpf_state__reload_ifs(s)) {
+    if (!bpf_state__reload_ifdata(s)) {
         log_error("No Ethernet interfaces available to attach to.");
         bpf_state__close_links(s);
         return false;
     }
 
-    // Close links after reloading interfaces, for performance.
+    // Close links AFTER reloading interface data to reduce downtime.
     bpf_state__close_links(s);
 
     // Get handles for the BPF programs.
@@ -268,17 +284,20 @@ bool bpf_state__reload_bpf(BPFState *s) {
 }
 
 bool bpf_state__reload_clients(BPFState *s) {
-    if (!s) { return false; }
+    if (!s) {
+        log_error("No BPF state!");
+        return false;
+    }
 
     // Get the map objects.
     struct bpf_map *client_map = bpf_state__get_client_map(s);
     if (!client_map) {
-        log_error("Failed to get Client map.");
+        log_error("Failed to get client map.");
         return false;
     }
     struct bpf_map *ip_cfg_map = bpf_state__get_ip_cfg_map(s);
     if (!ip_cfg_map) {
-        log_error("Failed to get IP Config map.");
+        log_error("Failed to get IP config map.");
         return false;
     }
 
@@ -299,7 +318,7 @@ bool bpf_state__reload_clients(BPFState *s) {
     s->cycle++;
 
     // Parse map file to populate the lists.
-    bpf_state__parse_clients(s, clients, ip_cfgs);
+    bpf_state__clients_file__parse(s, clients, ip_cfgs);
     if (!clients->length) {
         list__free(clients);
         list__free(ip_cfgs);
@@ -323,14 +342,14 @@ bool bpf_state__reload_clients(BPFState *s) {
         }
     }
 
-    // Update the Client map.
+    // Update the client map.
     for (size_t i = 0; i < clients->length; i++) {
         Client client = ((Client *)clients->items)[i];
         if (bpf_map__update_elem(
             client_map, &client.mac, sizeof(client.mac), &client, sizeof(client), BPF_ANY
         )) {
             log_error(
-                "Failed to update Client map for MAC: %02x:%02x:%02x:%02x:%02x:%02x",
+                "Failed to update client map for MAC: %02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx",
                 client.mac[0],
                 client.mac[1],
                 client.mac[2],
@@ -387,7 +406,7 @@ void bpf_state__clear_client_map(BPFState *s) {
     int res = bpf_map__get_next_key(client_map, NULL, key, ETH_ALEN);
     if (res) {
         if (res != -ENOENT) {
-            log_error("Failed to get first key from Client map (%d).", res);
+            log_error("Failed to get first key from client map (%d).", res);
         }
 
         return;
@@ -400,7 +419,7 @@ void bpf_state__clear_client_map(BPFState *s) {
         // Delete the current key.
         if (bpf_map__delete_elem(client_map, key, ETH_ALEN, BPF_ANY) != 0) {
             log_errno("bpf_map__delete_elem");
-            log_error("Failed to delete key from Client map.");
+            log_error("Failed to delete key from client map.");
             return;
         }
 
@@ -411,7 +430,7 @@ void bpf_state__clear_client_map(BPFState *s) {
     }
 
     if (res != -ENOENT) {
-        log_error("Failed to get next key from Client map.");
+        log_error("Failed to get next key from client map.");
     }
 }
 
@@ -425,7 +444,7 @@ void bpf_state__clear_ip_cfg_map(BPFState *s) {
     int res = bpf_map__get_next_key(ip_cfg_map, NULL, &key, sizeof(key));
     if (res) {
         if (res != -ENOENT) {
-            log_error("Failed to get first key from IP Config map (%d).", res);
+            log_error("Failed to get first key from IP config map (%d).", res);
         }
 
         return;
@@ -438,7 +457,7 @@ void bpf_state__clear_ip_cfg_map(BPFState *s) {
         // Delete the current key.
         if (bpf_map__delete_elem(ip_cfg_map, &key, sizeof(key), BPF_ANY) != 0) {
             log_errno("bpf_map__delete_elem");
-            log_error("Failed to delete key from IP Config map.");
+            log_error("Failed to delete key from IP config map.");
             return;
         }
 
@@ -449,7 +468,7 @@ void bpf_state__clear_ip_cfg_map(BPFState *s) {
     }
 
     if (res != -ENOENT) {
-        log_error("Failed to get next key from IP Config map.");
+        log_error("Failed to get next key from IP config map.");
     }
 }
 
@@ -476,7 +495,7 @@ void bpf_state__clear_vlan_cfg_map(BPFState *s) {
         // Delete the current key.
         if (bpf_map__delete_elem(vlan_cfg_map, &key, sizeof(key), BPF_ANY) != 0) {
             log_errno("bpf_map__delete_elem");
-            log_error("Failed to delete key from VLAN Config map.");
+            log_error("Failed to delete key from VLAN config map.");
             return;
         }
 
@@ -487,7 +506,7 @@ void bpf_state__clear_vlan_cfg_map(BPFState *s) {
     }
 
     if (res != -ENOENT) {
-        log_error("Failed to get next key from VLAN Config map.");
+        log_error("Failed to get next key from VLAN config map.");
     }
 }
 
@@ -503,7 +522,7 @@ void bpf_state__remove_stale_clients(BPFState *s, List *clients) {
     int res = bpf_map__get_next_key(client_map, NULL, key, ETH_ALEN);
     if (res) {
         if (res != -ENOENT) {
-            log_error("Failed to get first key from MAC map (%d).", res);
+            log_error("Failed to get first key from client map (%d).", res);
         }
 
         return;
@@ -516,13 +535,13 @@ void bpf_state__remove_stale_clients(BPFState *s, List *clients) {
         // Look up the client to check its cycle.
         Client client;
         if (bpf_map__lookup_elem(client_map, key, ETH_ALEN, &client, sizeof(client), 0)) {
-            log_error("Failed to look up client in Client map.");
+            log_error("Failed to look up client in client map.");
             return;
         } else {
             if (client.cycle != s->cycle) {
                 // Cycle doesn't match, so remove this stale entry.
                 if (bpf_map__delete_elem(client_map, key, ETH_ALEN, BPF_ANY) != 0) {
-                    log_error("Failed to delete stale key from Client map.");
+                    log_error("Failed to delete stale key from client map.");
                     return;
                 }
             }
@@ -535,7 +554,7 @@ void bpf_state__remove_stale_clients(BPFState *s, List *clients) {
     }
 
     if (res != -ENOENT) {
-        log_error("Failed to get next key from Client map.");
+        log_error("Failed to get next key from client map.");
     }
 }
 
@@ -551,7 +570,7 @@ void bpf_state__remove_stale_ip_cfgs(BPFState *s, List *ip_cfgs) {
     int res = bpf_map__get_next_key(ip_cfg_map, NULL, &key, sizeof(key));
     if (res) {
         if (res != -ENOENT) {
-            log_error("Failed to get first key from IP Config map (%d).", res);
+            log_error("Failed to get first key from IP config map (%d).", res);
         }
 
         return;
@@ -564,13 +583,13 @@ void bpf_state__remove_stale_ip_cfgs(BPFState *s, List *ip_cfgs) {
         // Look up the IP config to check its cycle.
         IPCfg ip_cfg;
         if (bpf_map__lookup_elem(ip_cfg_map, &key, sizeof(key), &ip_cfg, sizeof(ip_cfg), 0)) {
-            log_error("Failed to look up IP config in IP Config map.");
+            log_error("Failed to look up IP config in IP config map.");
             return;
         } else {
             if (ip_cfg.cycle != s->cycle) {
                 // Cycle doesn't match, so remove this stale entry.
                 if (bpf_map__delete_elem(ip_cfg_map, &key, sizeof(key), BPF_ANY) != 0) {
-                    log_error("Failed to delete stale key from IP Config map.");
+                    log_error("Failed to delete stale key from IP config map.");
                     return;
                 }
             }
@@ -583,7 +602,7 @@ void bpf_state__remove_stale_ip_cfgs(BPFState *s, List *ip_cfgs) {
     }
 
     if (res != -ENOENT) {
-        log_error("Failed to get next key from IP Config map.");
+        log_error("Failed to get next key from IP config map.");
     }
 }
 

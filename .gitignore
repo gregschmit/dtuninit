@@ -1,7 +1,6 @@
 dtuninit
 dtuninit_bpf.o
-dtuninit_clients
-!src/dtuninit
+dtuninit_clients.json
 
 .vscode/
 
