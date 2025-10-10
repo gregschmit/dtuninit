@@ -1,33 +1,32 @@
 VERSION = $(shell git describe --dirty 2>/dev/null)
 OPT_LEVEL ?= 3
 BPF_DEBUG ?= 0
-COMMON_CFLAGS = -g -Wall -DVERSION=\"$(VERSION)\" -DBPF_DEBUG=$(BPF_DEBUG)
 
-# Since we have to use clang for BPF, use it for everything.
+COMMON_CFLAGS = -g -O$(OPT_LEVEL) -Wall
+
+CFLAGS = $(COMMON_CFLAGS) -DVERSION=\"$(VERSION)\" -Iexternal
+LDFLAGS =
+LDLIBS = -lbpf
+
+# Since we have to use Clang for BPF, use it for everything.
 CC = clang
+LDFLAGS += -fuse-ld=lld
 
-# This probably shouldn't ever change, since it uses host endianness which is typically little, and
-# that's also the endianness for most target architectures, but this could be set to `bpfel` or
-# `bpfeb` if we need to target a different endianness from the host.
+# The BPF target probably shouldn't ever change, since it uses host endianness which is typically
+# little, and that's also the endianness for most target architectures, but this could be set to
+# `bpfel` or `bpfeb` if we need to target a different endianness from the host.
 BPF_TARGET ?= bpf
+BPF_CFLAGS = $(COMMON_CFLAGS) -DBPF_DEBUG=$(BPF_DEBUG) -target $(BPF_TARGET)
 
-BPF_CFLAGS = $(COMMON_CFLAGS) -target $(BPF_TARGET)
-# BPF_CFLAGS += -I/usr/include/x86_64-linux-gnu
-
-USR_TARGET ?=
-USR_LIBS = -lbpf -lelf -lz -lzstd
-USR_CFLAGS = $(COMMON_CFLAGS) $(if $(USR_TARGET),-target $(USR_TARGET),)
-USR_CFLAGS += -Iexternal
-# USR_CFLAGS += -I/usr/include/x86_64-linux-gnu
-# USR_CFLAGS += -I/usr/include/aarch64-linux-gnu
 USR_SRCS = \
 	src/shared.c \
 	$(wildcard src/dtuninit/*.c) \
 	$(wildcard src/dtuninit/bpf_state/*.c)
 USR_OBJS = $(USR_SRCS:.c=.o)
 
-ifeq ($(STATIC),1)
-	USR_LIBS += -static
+ifeq ($(STATIC), 1)
+	LDFLAGS += -static
+	LDLIBS += -lelf -lz -lzstd
 endif
 
 .PHONY: all
@@ -37,28 +36,20 @@ JSON_DIR = external/cJSON
 JSON_LIB = external/cJSON.o
 $(JSON_LIB):
 	cp $(JSON_DIR)/cJSON.h external/
-	$(CC) -O$(OPT_LEVEL) -c $(JSON_DIR)/cJSON.c -o $@
-
-$(USR_OBJS): %.o: %.c
-	$(CC) $(USR_CFLAGS) -O$(OPT_LEVEL) -c $< -o $@
+	$(CC) -c $(JSON_DIR)/cJSON.c -o $@
 
 dtuninit_bpf.o: src/dtuninit_bpf/main.c
-	$(CC) $(BPF_CFLAGS) -O$(OPT_LEVEL) -c $^ -o $@
+	$(CC) $(BPF_CFLAGS) -c $^ -o $@
 
 dtuninit: $(JSON_LIB) $(USR_OBJS)
-	$(CC) $(USR_CFLAGS) -O$(OPT_LEVEL) $^ -o $@ $(USR_LIBS)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS) $(LDLIBS)
 
 dev: dtuninit_bpf.o dtuninit
-	sudo ./dtuninit -d -C ./dtuninit_clients
+	sudo ./dtuninit -d -C ./dtuninit_clients.json
 
 .PHONY: static
 static:
 	$(MAKE) all STATIC=1
-
-.PHONY: cross
-cross:
-	# Assume aarch64 for now.
-	$(MAKE) all USR_TARGET=aarch64-linux-gnu
 
 .PHONY: docker_build
 docker_build:

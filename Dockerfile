@@ -9,6 +9,7 @@ RUN apk add --no-cache \
     gdb \
     libbpf-dev \
     linux-headers \
+    lld \
     vim \
     zlib-static \
     zstd-static
