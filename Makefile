@@ -25,8 +25,23 @@ USR_SRCS = \
 USR_OBJS = $(USR_SRCS:.c=.o)
 
 ifeq ($(STATIC), 1)
-	LDFLAGS += -static
-	LDLIBS += -lelf -lz -lzstd
+LDFLAGS += -static
+LDLIBS += -lelf -lz -lzstd
+endif
+
+# Cross-compilation support.
+CROSS ?=
+ifdef CROSS
+ifeq ($(CROSS),aarch64)
+TARGET = aarch64-alpine-linux-musl
+CFLAGS += --sysroot /sysroot/aarch64
+else ifeq ($(CROSS),x86_64)
+TARGET = x86_64-alpine-linux-musl
+CFLAGS += --sysroot /sysroot/x86_64
+else
+$(error CROSS must be either "aarch64" or "x86_64")
+endif
+CFLAGS += -target $(TARGET)
 endif
 
 .PHONY: all
@@ -36,7 +51,7 @@ JSON_DIR = external/cJSON
 JSON_LIB = external/cJSON.o
 $(JSON_LIB):
 	cp $(JSON_DIR)/cJSON.h external/
-	$(CC) -c $(JSON_DIR)/cJSON.c -o $@
+	$(CC) $(CFLAGS) -c $(JSON_DIR)/cJSON.c -o $@
 
 dtuninit_bpf.o: src/dtuninit_bpf/main.c
 	$(CC) $(BPF_CFLAGS) -c $^ -o $@
@@ -46,10 +61,6 @@ dtuninit: $(JSON_LIB) $(USR_OBJS)
 
 dev: dtuninit_bpf.o dtuninit
 	sudo ./dtuninit -d -C ./dtuninit_clients.json
-
-.PHONY: static
-static:
-	$(MAKE) all STATIC=1
 
 .PHONY: docker_build
 docker_build:
@@ -62,10 +73,6 @@ docker_run: docker_build
 .PHONY: build
 build: docker_build
 	docker run -it --rm -v .:/app dtuninit make -B
-
-.PHONY: build_static
-build_static: docker_build
-	docker run -it --rm -v .:/app dtuninit make -B static
 
 # TODO: Get clang-tidy working.
 # .PHONY: tidy
