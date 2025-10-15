@@ -88,7 +88,7 @@ $(JSON_LIB):
 JSONC_DIR = external/json-c
 JSONC_LIB = external/libjson-c.a
 JSONC_BUILD_DIR = $(JSONC_DIR)_build
-JSONC_INSTALL_DIR = external/json-c_install
+JSONC_INSTALL_DIR = $(JSONC_DIR)_install
 $(JSONC_LIB):
 	rm -rf $(JSONC_BUILD_DIR)
 	mkdir -p $(JSONC_BUILD_DIR)
@@ -99,31 +99,41 @@ $(JSONC_LIB):
 	cmake --build $(JSONC_BUILD_DIR)
 	cmake --install $(JSONC_BUILD_DIR)
 	cp $(JSONC_BUILD_DIR)/libjson-c.a external/
-	cp $(JSONC_BUILD_DIR)/libjson-c.so* external/
 
 # External: libubox (needed by ubus)
 UBOX_DIR = external/libubox
 UBOX_LIB = external/libubox.a
 UBOX_BUILD_DIR = $(UBOX_DIR)_build
+UBOX_INSTALL_DIR = $(UBOX_DIR)_install
 $(UBOX_LIB): $(JSONC_LIB)
 	rm -rf $(UBOX_BUILD_DIR)
 	mkdir -p $(UBOX_BUILD_DIR)
 	cmake -B $(UBOX_BUILD_DIR) -S $(UBOX_DIR) $(CMAKE_COMMON) \
-		-DBUILD_STATIC=ON \
+		-DCMAKE_PREFIX_PATH=$(PWD)/$(JSONC_INSTALL_DIR) \
+		-DCMAKE_INSTALL_PREFIX=$(UBOX_INSTALL_DIR) \
 		-DBUILD_LUA=OFF \
 		-DBUILD_EXAMPLES=OFF
+	cmake --build $(UBOX_BUILD_DIR)
+	cmake --install $(UBOX_BUILD_DIR)
+	cp $(UBOX_BUILD_DIR)/libubox.a external/
 
 # External: ubus
 UBUS_DIR = external/ubus
-UBUS_LIB = external/ubus.a
+UBUS_LIB = external/libubus.a
 UBUS_BUILD_DIR = $(UBUS_DIR)_build
-$(UBUS_LIB):
+UBUS_INSTALL_DIR = $(UBUS_DIR)_install
+$(UBUS_LIB): $(UBOX_LIB)
 	rm -rf $(UBUS_BUILD_DIR)
 	mkdir -p $(UBUS_BUILD_DIR)
 	cmake -B $(UBUS_BUILD_DIR) -S $(UBUS_DIR) $(CMAKE_COMMON) \
+		-DCMAKE_PREFIX_PATH="$(PWD)/$(JSONC_INSTALL_DIR);$(PWD)/$(UBOX_INSTALL_DIR)" \
+		-DCMAKE_INSTALL_PREFIX=$(UBUS_INSTALL_DIR) \
 		-DBUILD_STATIC=ON \
 		-DBUILD_LUA=OFF \
 		-DBUILD_EXAMPLES=OFF
+	cmake --build $(UBUS_BUILD_DIR)
+	cmake --install $(UBUS_BUILD_DIR)
+	cp $(UBUS_BUILD_DIR)/libubus.a external/
 
 dtuninit_bpf.o: src/dtuninit_bpf/main.c
 	$(CC) $(BPF_CFLAGS) -c src/dtuninit_bpf/main.c -o $@
