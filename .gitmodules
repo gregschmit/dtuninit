@@ -1,3 +1,12 @@
 [submodule "external/cJSON"]
 	path = external/cJSON
 	url = https://github.com/DaveGamble/cJSON
+[submodule "external/ubus"]
+	path = external/ubus
+	url = https://github.com/openwrt/ubus
+[submodule "external/libubox"]
+	path = external/libubox
+	url = https://github.com/openwrt/libubox
+[submodule "external/json-c"]
+	path = external/json-c
+	url = https://github.com/json-c/json-c

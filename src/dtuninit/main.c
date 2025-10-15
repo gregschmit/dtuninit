@@ -19,9 +19,9 @@
 
 #include "../shared.h"
 #include "log.h"
-#include "watch.h"
 #include "bpf_state.h"
 #include "bpf_state/clients_file.h"
+#include "bpf_state/watch.h"
 
 #define DEFAULT_CLIENTS_FN "dtuninit_clients.json"
 #define DEFAULT_CLIENTS_PATH "/var/run/" DEFAULT_CLIENTS_FN
@@ -137,7 +137,7 @@ bool start() {
     }
 
     // Watch and update state on changes.
-    bool watch_success = watch(state);
+    bool watch_success = bpf_state__watch(state);
 
     log_info("Unloading BPF programs.");
     bpf_state__close(state);

@@ -13,7 +13,7 @@
 #include <sys/inotify.h>
 #include <unistd.h>
 
-#include "log.h"
+#include "../log.h"
 
 #include "watch.h"
 
@@ -24,9 +24,10 @@
 extern volatile bool INTERRUPT;
 
 /*
- * Watch the specified file for changes and execute the callback when a change is detected.
+ * Watch for state changes (clients file, network interfaces, ubus events, etc), and call the
+ * appropriate reload functions, as needed.
  */
-bool watch(BPFState *state) {
+bool bpf_state__watch(BPFState *state) {
     if (!state) { return false; }
 
     // Extract the directory name and file name without modifying `clients_path`.

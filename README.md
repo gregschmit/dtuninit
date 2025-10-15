@@ -3,7 +3,7 @@
 This project implements a tunnel initiator using a userspace daemon and a set of BPF programs. The
 daemon mounts the BPF programs to the configured interfaces (should at minimum be mounted to the
 WLAN interface and the interface that wires the AP into the network). The BPF program then manages
-the encapsulation and decapsulation of packets between the client and the peer IP endpoint.
+the encapsulation and decapsulation of packets between the client and the peer (responder).
 
 ## TODO
 
