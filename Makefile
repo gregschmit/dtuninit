@@ -8,13 +8,13 @@ VERSION = $(shell git describe --dirty 2>/dev/null)
 #
 # This works by computing the current state, comparing it to the old state from the file, and if
 # they differ, adding `-B` to the `MAKEFLAGS`. The current state is written to the file for the next
-# build. Ensure this logic is skipped for the `clean` target itself to avoid infinite recursion.
-OPT_LEVEL := $(if $(strip $(OPT_LEVEL)),$(OPT_LEVEL),3)
-BPF_DEBUG := $(if $(strip $(BPF_DEBUG)),$(BPF_DEBUG),0)
-BPF_TARGET := $(if $(strip $(BPF_TARGET)),$(BPF_TARGET),bpf)
-STATIC := $(if $(strip $(STATIC)),$(STATIC),)
-CROSS := $(if $(strip $(CROSS)),$(CROSS),)
-UBUS := $(if $(strip $(UBUS)),$(UBUS),1)
+# build.
+OPT_LEVEL := $(if $(strip $(OPT_LEVEL)),$(strip $(OPT_LEVEL)),3)
+BPF_DEBUG := $(if $(strip $(BPF_DEBUG)),$(strip $(BPF_DEBUG)),0)
+BPF_TARGET := $(if $(strip $(BPF_TARGET)),$(strip $(BPF_TARGET)),bpf)
+STATIC := $(if $(strip $(STATIC)),$(if $(filter 0,$(STATIC)),,1),)
+CROSS := $(if $(strip $(CROSS)),$(strip $(CROSS)),)
+UBUS := $(if $(strip $(UBUS)),$(if $(filter 0,$(UBUS)),,1),1)
 BUILDENV = .buildenv
 BUILDENV_VARS = OPT_LEVEL BPF_DEBUG BPF_TARGET STATIC CROSS UBUS
 BUILDENV_STATE = $(foreach v,$(BUILDENV_VARS),$(v)=$($(v)))
@@ -30,8 +30,8 @@ ifneq ($(BUILDENV_STATE),$(BUILDENV_STATE_OLD))
   $(shell echo "$(BUILDENV_STATE)" > $(BUILDENV))
 endif
 
+# Initialize build variables.
 COMMON_CFLAGS = -g -O$(OPT_LEVEL) -Wall
-
 CFLAGS = $(COMMON_CFLAGS) -DVERSION=\"$(VERSION)\" -Iexternal
 LDFLAGS =
 LDLIBS = -lbpf
@@ -46,26 +46,35 @@ CMAKE_COMMON = \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_LINKER_TYPE=LLD
 
-# The BPF target probably shouldn't ever change, since it uses host endianness which is typically
-# little, and that's also the endianness for most target architectures, but this could be set to
-# `bpfel` or `bpfeb` if we need to target a different endianness from the host.
 BPF_CFLAGS = $(COMMON_CFLAGS) -DBPF_DEBUG=$(BPF_DEBUG) -target $(BPF_TARGET)
 
 # Static linking support.
 ifeq ($(STATIC), 1)
+  STATIC_ONOFF = ON
+  SHARED_ONOFF = OFF
   LDFLAGS += -static
   LDLIBS += -lelf -lz -lzstd
+else
+  STATIC_ONOFF = OFF
+  SHARED_ONOFF = ON
 endif
 
 # Cross-compilation support.
-ifeq ($(strip $(CROSS)),)
-  # No cross compilation.
+ifeq ($(CROSS),)
+  # No cross-compilation.
 else ifeq ($(CROSS),aarch64)
   CFLAGS += --sysroot /sysroot/aarch64 -target aarch64-alpine-linux-musl
 else ifeq ($(CROSS),x86_64)
   CFLAGS += --sysroot /sysroot/x86_64 -target x86_64-alpine-linux-musl
 else
-  $(error CROSS must be blank, "aarch64", or "x86_64")
+  $(error CROSS must be "aarch64" or "x86_64")
+endif
+
+# Ubus support.
+ifeq ($(UBUS),1)
+  CFLAGS += -DUBUS -I$(UBUS_INSTALL_DIR)/include
+  LDFLAGS += -L$(UBUS_INSTALL_DIR)/lib
+  LDLIBS += -lubus
 endif
 
 .PHONY: all
@@ -86,27 +95,28 @@ $(JSON_LIB):
 
 # External: json-c (needed by libubox)
 JSONC_DIR = external/json-c
-JSONC_LIB = external/libjson-c.a
 JSONC_BUILD_DIR = $(JSONC_DIR)_build
 JSONC_INSTALL_DIR = $(JSONC_DIR)_install
+JSONC_LIB = $(JSONC_INSTALL_DIR)/lib/libjson-c.$(if $(STATIC),a,so)
 $(JSONC_LIB):
 	rm -rf $(JSONC_BUILD_DIR)
+	rm -rf $(JSONC_INSTALL_DIR)
 	mkdir -p $(JSONC_BUILD_DIR)
 	cmake -B $(JSONC_BUILD_DIR) -S $(JSONC_DIR) $(CMAKE_COMMON) \
 		-DCMAKE_INSTALL_PREFIX=$(JSONC_INSTALL_DIR) \
-		-DBUILD_STATIC_LIBS=ON \
-		-DBUILD_SHARED_LIBS=ON
+		-DBUILD_STATIC_LIBS=$(STATIC_ONOFF) \
+		-DBUILD_SHARED_LIBS=$(SHARED_ONOFF)
 	cmake --build $(JSONC_BUILD_DIR)
 	cmake --install $(JSONC_BUILD_DIR)
-	cp $(JSONC_BUILD_DIR)/libjson-c.a external/
 
 # External: libubox (needed by ubus)
 UBOX_DIR = external/libubox
-UBOX_LIB = external/libubox.a
 UBOX_BUILD_DIR = $(UBOX_DIR)_build
 UBOX_INSTALL_DIR = $(UBOX_DIR)_install
+UBOX_LIB = $(UBOX_INSTALL_DIR)/lib/libubox.$(if $(STATIC),a,so)
 $(UBOX_LIB): $(JSONC_LIB)
 	rm -rf $(UBOX_BUILD_DIR)
+	rm -rf $(UBOX_INSTALL_DIR)
 	mkdir -p $(UBOX_BUILD_DIR)
 	cmake -B $(UBOX_BUILD_DIR) -S $(UBOX_DIR) $(CMAKE_COMMON) \
 		-DCMAKE_PREFIX_PATH=$(PWD)/$(JSONC_INSTALL_DIR) \
@@ -115,25 +125,24 @@ $(UBOX_LIB): $(JSONC_LIB)
 		-DBUILD_EXAMPLES=OFF
 	cmake --build $(UBOX_BUILD_DIR)
 	cmake --install $(UBOX_BUILD_DIR)
-	cp $(UBOX_BUILD_DIR)/libubox.a external/
 
 # External: ubus
 UBUS_DIR = external/ubus
-UBUS_LIB = external/libubus.a
 UBUS_BUILD_DIR = $(UBUS_DIR)_build
 UBUS_INSTALL_DIR = $(UBUS_DIR)_install
+UBUS_LIB = $(UBUS_INSTALL_DIR)/lib/libubus.$(if $(STATIC),a,so)
 $(UBUS_LIB): $(UBOX_LIB)
 	rm -rf $(UBUS_BUILD_DIR)
+	rm -rf $(UBUS_INSTALL_DIR)
 	mkdir -p $(UBUS_BUILD_DIR)
 	cmake -B $(UBUS_BUILD_DIR) -S $(UBUS_DIR) $(CMAKE_COMMON) \
 		-DCMAKE_PREFIX_PATH="$(PWD)/$(JSONC_INSTALL_DIR);$(PWD)/$(UBOX_INSTALL_DIR)" \
 		-DCMAKE_INSTALL_PREFIX=$(UBUS_INSTALL_DIR) \
-		-DBUILD_STATIC=ON \
+		-DBUILD_STATIC=$(STATIC_ONOFF) \
 		-DBUILD_LUA=OFF \
 		-DBUILD_EXAMPLES=OFF
 	cmake --build $(UBUS_BUILD_DIR)
 	cmake --install $(UBUS_BUILD_DIR)
-	cp $(UBUS_BUILD_DIR)/libubus.a external/
 
 dtuninit_bpf.o: src/dtuninit_bpf/main.c
 	$(CC) $(BPF_CFLAGS) -c src/dtuninit_bpf/main.c -o $@
@@ -141,9 +150,10 @@ dtuninit_bpf.o: src/dtuninit_bpf/main.c
 USR_SRCS = \
   src/shared.c \
   $(wildcard src/dtuninit/*.c) \
-  $(wildcard src/dtuninit/bpf_state/*.c)
+  $(wildcard src/dtuninit/bpf_state/*.c) \
+  $(if $(UBUS),src/dtuninit/bpf_state/watch/ubus.c)
 USR_OBJS = $(USR_SRCS:.c=.o)
-dtuninit: $(JSON_LIB) $(USR_OBJS)
+dtuninit: $(JSON_LIB) $(if $(UBUS), $(UBUS_LIB)) $(USR_OBJS)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS) $(LDLIBS)
 
 dev: dtuninit_bpf.o dtuninit

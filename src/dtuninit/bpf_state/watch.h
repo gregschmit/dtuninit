@@ -1,5 +1,5 @@
-#ifndef WATCH_H
-#define WATCH_H
+#ifndef BPF_STATE__WATCH_H
+#define BPF_STATE__WATCH_H
 
 #include <stdbool.h>
 
@@ -8,4 +8,4 @@
 
 bool bpf_state__watch(BPFState *state);
 
-#endif  // WATCH_H
+#endif  // BPF_STATE__WATCH_H
