@@ -2,6 +2,7 @@
 /dtuninit
 /dtuninit_bpf.o
 /dtuninit_clients.json
+/sysroot
 
 .vscode/
 

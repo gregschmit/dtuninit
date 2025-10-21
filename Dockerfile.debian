@@ -1,0 +1,23 @@
+FROM debian:latest
+
+ENV CROSS_PKGS="clang libbpf-dev linux-headers-generic zlib1g-dev libzstd-dev"
+ENV PKGS="make cmake git gdb elfutils lld pkgconf vim $CROSS_PKGS"
+
+RUN apt update && apt upgrade -y
+RUN apt install -y $PKGS
+
+# # Setup a sysroot for cross compilation on x86_64.
+# RUN [ "$(apk --print-arch)" != "x86_64" ] && \
+#     mkdir -p /sysroot/x86_64/etc/apk && \
+#     cp /etc/apk/repositories /sysroot/x86_64/etc/apk/ && \
+#     apk --arch x86_64 --root /sysroot/x86_64 --allow-untrusted --initdb add --no-cache $CROSS_PKGS || true
+
+# # # Setup a sysroot for cross compilation on aarch64.
+# RUN [ "$(apk --print-arch)" != "aarch64" ] && \
+#     mkdir -p /sysroot/aarch64/etc/apk && \
+#     cp /etc/apk/repositories /sysroot/aarch64/etc/apk/ && \
+#     apk --arch aarch64 --root /sysroot/aarch64 --allow-untrusted --initdb add --no-cache $CROSS_PKGS || true
+
+WORKDIR /app
+
+CMD ["/bin/bash"]

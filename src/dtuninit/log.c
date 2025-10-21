@@ -60,3 +60,11 @@ void dbg_errno(const char *label) {
     fprintf(stderr, "(%s) %s\n", label, strerror(errno));
     DISABLE_COLOR()
 }
+
+bool check_ptr(const char *f_name, const char *ptr_name, const void *ptr) {
+    if (!ptr) {
+        log_error("%s: %s NULL pointer detected.", f_name, ptr_name);
+        return false;
+    }
+    return true;
+}

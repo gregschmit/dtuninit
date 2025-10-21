@@ -1,6 +1,7 @@
 #ifndef BPF_STATE_H
 #define BPF_STATE_H
 
+#include <limits.h>
 #include <stdbool.h>
 
 #include <bpf/libbpf.h>

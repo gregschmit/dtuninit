@@ -104,8 +104,6 @@ static bool populate_ip_cfg_ifindex(IPCfg *ip_cfg) {
 
 // Ensure `src_ip` is set to 0 if any of the population steps fail.
 static bool populate_ip_cfg(IPCfg *ip_cfg) {
-    if (!ip_cfg || !ip_cfg->peer_ip.s_addr) { return false; }
-
     // Determine src IP for this peer IP.
     if (!populate_ip_cfg_src_ip(ip_cfg)) {
         log_error("Failed to determine src IP for peer IP: %s.", ip_cfg__peer_ip_s(ip_cfg));
@@ -376,7 +374,9 @@ static bool deserialize(cJSON *client_json, Client *client) {
 }
 
 void bpf_state__clients_file__parse(BPFState *s, List *clients, List *ip_cfgs) {
-    if (!s || !clients || !ip_cfgs) { return; }
+    if (!check_ptr("bpf_state__clients_file__parse", "s", s)) { return; }
+    if (!check_ptr("bpf_state__clients_file__parse", "clients", clients)) { return; }
+    if (!check_ptr("bpf_state__clients_file__parse", "ip_cfgs", ip_cfgs)) { return; }
 
     cJSON *json = read_clients_json(s->clients_path);
     if (!json) { return; }
@@ -512,7 +512,8 @@ static void serialize(cJSON *json, Client *client) {
 }
 
 bool bpf_state__clients_file__insert(BPFState *s, List *clients) {
-    if (!s || !clients) { return false; }
+    if (!check_ptr("bpf_state__clients_file__insert", "s", s)) { return false; }
+    if (!check_ptr("bpf_state__clients_file__insert", "clients", clients)) { return false; }
 
     cJSON *json = read_clients_json(s->clients_path);
     if (!json) {
@@ -538,7 +539,8 @@ bool bpf_state__clients_file__insert(BPFState *s, List *clients) {
 }
 
 bool bpf_state__clients_file__remove_s(BPFState *s, const char *mac_s) {
-    if (!s || !mac_s) { return false; }
+    if (!check_ptr("bpf_state__clients_file__remove_s", "s", s)) { return false; }
+    if (!check_ptr("bpf_state__clients_file__remove_s", "mac_s", mac_s)) { return false; }
 
     cJSON *json = read_clients_json(s->clients_path);
     if (!json) { return false; }
@@ -562,7 +564,8 @@ bool bpf_state__clients_file__remove_s(BPFState *s, const char *mac_s) {
 }
 
 bool bpf_state__clients_file__remove(BPFState *s, uint8_t mac[ETH_ALEN]) {
-    if (!s || !mac) { return false; }
+    if (!check_ptr("bpf_state__clients_file__remove", "s", s)) { return false; }
+    if (!check_ptr("bpf_state__clients_file__remove", "mac", mac)) { return false; }
 
     char mac_s[18];
     snprintf(

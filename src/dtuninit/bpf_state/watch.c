@@ -29,7 +29,7 @@ extern volatile bool INTERRUPT;
  * appropriate reload functions, as needed.
  */
 bool bpf_state__watch(BPFState *state) {
-    if (!state) { return false; }
+    if (!check_ptr("bpf_state__watch", "state", state)) { return false; }
 
     // Extract the directory name and file name without modifying `clients_path`.
     char tmp[PATH_MAX];

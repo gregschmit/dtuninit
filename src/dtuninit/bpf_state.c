@@ -23,7 +23,7 @@
 #include "bpf_state/clients_file.h"
 
 void bpf_state__close_links(BPFState *s) {
-    if (!s) { return; }
+    if (!check_ptr("bpf_state__close_links", "s", s)) { return; }
 
     for (unsigned i = 0; i < s->n_links; i++) {
         bpf_link__destroy(s->links[i]);
@@ -32,7 +32,7 @@ void bpf_state__close_links(BPFState *s) {
 }
 
 void bpf_state__close(BPFState *s) {
-    if (!s) { return; }
+    if (!check_ptr("bpf_state__close", "s", s)) { return; }
 
     bpf_state__close_links(s);
 
@@ -44,6 +44,9 @@ void bpf_state__close(BPFState *s) {
 }
 
 BPFState *bpf_state__open(char *clients_path, char **input_ifs) {
+    if (!check_ptr("bpf_state__open", "clients_path", clients_path)) { return NULL; }
+    if (!check_ptr("bpf_state__open", "input_ifs", input_ifs)) { return NULL; }
+
     BPFState *s = calloc(1, sizeof(BPFState));
     if (!s) {
         log_errno("calloc");

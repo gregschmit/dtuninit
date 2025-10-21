@@ -4,11 +4,14 @@ VERSION = $(shell git describe --dirty 2>/dev/null)
 #
 # The specified build environment variables will be tracked and we will ensure targets are rebuilt
 # when any of these change. We use conditional assignment so blank indicates to use the default
-# value. This is useful in the Docker environment.
+# value; this is useful in the Docker environment where we pass environment variables which are
+# blank if unset by the host environment.
 #
 # This works by computing the current state, comparing it to the old state from the file, and if
 # they differ, adding `-B` to the `MAKEFLAGS`. The current state is written to the file for the next
 # build.
+#
+# NOTE: Boolean variables should end up as either `1` or blank.
 OPT_LEVEL := $(if $(strip $(OPT_LEVEL)),$(strip $(OPT_LEVEL)),3)
 BPF_DEBUG := $(if $(strip $(BPF_DEBUG)),$(strip $(BPF_DEBUG)),0)
 BPF_TARGET := $(if $(strip $(BPF_TARGET)),$(strip $(BPF_TARGET)),bpf)
@@ -30,11 +33,14 @@ ifneq ($(BUILDENV_STATE),$(BUILDENV_STATE_OLD))
   $(shell echo "$(BUILDENV_STATE)" > $(BUILDENV))
 endif
 
-# Initialize build variables.
+# Initialize C build variables.
 COMMON_CFLAGS = -g -O$(OPT_LEVEL) -Wall
 CFLAGS = $(COMMON_CFLAGS) -DVERSION=\"$(VERSION)\" -Iexternal
 LDFLAGS =
 LDLIBS = -lbpf
+
+# BPF is built to target the Linux BPF virtual machine.
+BPF_CFLAGS = $(COMMON_CFLAGS) -DBPF_DEBUG=$(BPF_DEBUG) -target $(BPF_TARGET)
 
 # Since we have to use Clang for BPF, use it for everything.
 CC = clang
@@ -45,8 +51,6 @@ CMAKE_COMMON = \
   -DCMAKE_C_COMPILER=clang \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_LINKER_TYPE=LLD
-
-BPF_CFLAGS = $(COMMON_CFLAGS) -DBPF_DEBUG=$(BPF_DEBUG) -target $(BPF_TARGET)
 
 # Static linking support.
 ifeq ($(STATIC), 1)
@@ -68,6 +72,18 @@ else ifeq ($(CROSS),x86_64)
   CFLAGS += --sysroot /sysroot/x86_64 -target x86_64-alpine-linux-musl
 else
   $(error CROSS must be "aarch64" or "x86_64")
+endif
+
+# Debian custom linux headers location.
+ARCH = $(shell uname -m)
+ifeq ($(CROSS),)
+  ifeq ($(ARCH),aarch64)
+    BPF_CFLAGS += -I/usr/include/aarch64-linux-gnu
+  else ifeq ($(ARCH),x86_64)
+    BPF_CFLAGS += -I/usr/include/x86_64-linux-gnu
+  endif
+else
+  # TODO: Figure out what is needed when cross compiling.
 endif
 
 # Ubus support.
@@ -177,6 +193,14 @@ build: docker_build
 		-e CROSS=$(CROSS) \
 		-e UBUS=$(UBUS) \
 		dtuninit make
+
+.PHONY: docker_debian_build
+docker_debian_build:
+	docker build -f Dockerfile.debian -t dtuninit-debian .
+
+.PHONY: docker_debian_run
+docker_debian_run: docker_debian_build
+	docker run -it --rm -v .:/app dtuninit-debian /bin/bash
 
 # TODO: Get clang-tidy working.
 # .PHONY: tidy
