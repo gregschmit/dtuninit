@@ -570,13 +570,22 @@ int main(int argc, char *argv[]) {
     } else if (!strcmp(subcommand, "help")) {
         log_info("%s", GLOBAL_USAGE_S);
     #ifdef UBUS
-    } else if (!strcmp(subcommand, "ubus_list")) {
-        // Undocumented subcommand for testing UBUS listing.
+    } else if (!strcmp(subcommand, "ubus_list_objs")) {
+        // Undocumented: for testing UBUS' ability to get hapd objs.
         const char **ubus_hapd_objs = bpf_state__ubus__hapd_list();
         if (ubus_hapd_objs) {
             for (unsigned i = 0; ubus_hapd_objs[i] != NULL; i++) {
                 log_info("%s", ubus_hapd_objs[i]);
             }
+            return 0;
+        } else {
+            return 1;
+        }
+    } else if (!strcmp(subcommand, "ubus_list_clients")) {
+        // Undocumented: for testing UBUS' ability to get clients.
+        List *clients = bpf_state__ubus__get_clients();
+        if (clients) {
+            list__free(clients);
             return 0;
         } else {
             return 1;
