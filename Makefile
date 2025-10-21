@@ -160,16 +160,19 @@ $(UBUS_LIB): $(UBOX_LIB)
 	cmake --build $(UBUS_BUILD_DIR)
 	cmake --install $(UBUS_BUILD_DIR)
 
-dtuninit_bpf.o: src/dtuninit_bpf/main.c
+dtuninit_bpf.o: src/shared.o src/dtuninit_bpf/main.c
 	$(CC) $(BPF_CFLAGS) -c src/dtuninit_bpf/main.c -o $@
 
 USR_SRCS = \
-  src/shared.c \
-  $(wildcard src/dtuninit/*.c) \
-  $(wildcard src/dtuninit/bpf_state/*.c) \
-  $(if $(UBUS),src/dtuninit/bpf_state/watch/ubus.c)
+  src/dtuninit/bpf_state.c \
+  src/dtuninit/list.c \
+  src/dtuninit/log.c \
+  src/dtuninit/bpf_state/clients_file.c \
+  src/dtuninit/bpf_state/watch.c \
+  $(if $(UBUS),src/dtuninit/bpf_state/ubus.c) \
+  src/dtuninit/main.c
 USR_OBJS = $(USR_SRCS:.c=.o)
-dtuninit: $(JSON_LIB) $(if $(UBUS), $(UBUS_LIB)) $(USR_OBJS)
+dtuninit: src/shared.o $(JSON_LIB) $(if $(UBUS), $(UBUS_LIB)) $(USR_OBJS)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS) $(LDLIBS)
 
 dev: dtuninit_bpf.o dtuninit

@@ -23,6 +23,10 @@
 #include "bpf_state/clients_file.h"
 #include "bpf_state/watch.h"
 
+#ifdef UBUS
+#include "bpf_state/ubus.h"
+#endif
+
 #define DEFAULT_CLIENTS_FN "dtuninit_clients.json"
 #define DEFAULT_CLIENTS_PATH "/var/run/" DEFAULT_CLIENTS_FN
 #define DEFAULT_BPF_FN "dtuninit_bpf.o"
@@ -565,6 +569,22 @@ int main(int argc, char *argv[]) {
         }
     } else if (!strcmp(subcommand, "help")) {
         log_info("%s", GLOBAL_USAGE_S);
+    #ifdef UBUS
+    } else if (!strcmp(subcommand, "ubus_list")) {
+        // Undocumented subcommand for testing UBUS listing.
+        if (bpf_state__ubus__hapd_list()) {
+            for (size_t i = 0; i < UBUS_MAX_HAPD_LIST; i++) {
+                if (UBUS_HAPD_LIST[i][0]) {
+                    log_info("%s", UBUS_HAPD_LIST[i]);
+                } else {
+                    break;
+                }
+            }
+            return 0;
+        } else {
+            return 1;
+        }
+    #endif
     } else {
         log_error("Unknown subcommand: `%s`.", subcommand);
         log_info("%s", GLOBAL_USAGE_S);

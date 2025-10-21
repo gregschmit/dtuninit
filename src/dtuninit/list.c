@@ -4,15 +4,15 @@
  *
  * This is currently used for storing the list of clients and IP configs. The linear search time is
  * acceptable because:
- *   - both the list of clients and IP configs are fairly small (order of number of client stations
- *     on an AP)
- *   - this implementation stores the objects contiguously in memory, so the cache locality is good
- *   - the main thing we do when interacting with the BPF maps it to iterate these lists, so again
- *     cache locality helps us be fast there
- *   - search is only used for the Peer IP config list, which is typically an especially small list
- *   - search is only used when building the initial list to avoid inserting multiple IP configs for
- *     the same Peer IP
- *   - we use a `cycle` for the BPF maps to make it quick and easy to remove stale entries
+ *   - Both the list of clients and IP configs are fairly small (order of number of client stations
+ *     on an AP).
+ *   - This implementation stores the objects contiguously in memory, so the cache locality is good.
+ *   - The main thing we do when interacting with the BPF maps it to iterate these lists, so again
+ *     cache locality helps us be fast there.
+ *   - Search is only used for the Peer IP config list, which is typically an especially small list.
+ *   - Search is only used when building the initial list to avoid inserting multiple IP configs for
+ *     the same Peer IP.
+ *   - We use a `cycle` for the BPF maps to make it quick and easy to remove stale entries.
  *
  *  If we modify the BPF map update behavior or violate any of the other assumptions above, then we
  *  may want to revisit this implementation and consider using some kind of hash/tree data structure
