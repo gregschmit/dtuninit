@@ -1,54 +1,60 @@
 #include "../log.h"
 #include "ubus.h"
 
-static void list_append(const char *name) {
-    // Append `name` to `UBUS_HAPD_LIST`, if there is space.
-    for (size_t i = 0; i < UBUS_MAX_HAPD_LIST; i++) {
-        if (!UBUS_HAPD_LIST[i][0]) {
-            if (strlen(name) >= UBUS_MAX_HAPD_NAME_LEN) {
-                log_error("UBUS object name too long; skipping: %s", name);
-                return;
-            }
+#define UBUS_MAX_HAPD_OBJS 32
+#define UBUS_MAX_HAPD_NAME_LEN 256
 
-            snprintf(UBUS_HAPD_LIST[i], UBUS_MAX_HAPD_NAME_LEN, "%s", name);
+// Static storage for hostapd objects.
+static unsigned UBUS_N_HAPD_OBJS = 0;
+static char UBUS_HAPD_OBJS[UBUS_MAX_HAPD_OBJS][UBUS_MAX_HAPD_NAME_LEN] = {0};
+static char *UBUS_HAPD_OBJS_PTRS[UBUS_MAX_HAPD_OBJS + 1] = {0};  // NULL-terminated.
 
-            // Clear next entry unless at end of list.
-            if (i + 1 < UBUS_MAX_HAPD_LIST) {
-                UBUS_HAPD_LIST[i + 1][0] = '\0';
-            }
+static void ubus_hapd_objs_append(const char *name) {
+    if (!check_ptr("ubus_hapd_objs_append", "name", name)) { return; }
 
-            return;
-        }
+    if (strlen(name) >= UBUS_MAX_HAPD_NAME_LEN) {
+        log_error("UBUS object name too long; skipping %s", name);
+        return;
     }
 
-    log_error("UBUS_HAPD_LIST is full; skipping %s", name);
-}
+    // Append `name` to `UBUS_HAPD_OBJS`, if there is space.
+    if (UBUS_N_HAPD_OBJS < UBUS_MAX_HAPD_OBJS) {
+        snprintf(UBUS_HAPD_OBJS[UBUS_N_HAPD_OBJS], UBUS_MAX_HAPD_NAME_LEN, "%s", name);
+        UBUS_HAPD_OBJS_PTRS[UBUS_N_HAPD_OBJS] = UBUS_HAPD_OBJS[UBUS_N_HAPD_OBJS];
+        UBUS_N_HAPD_OBJS++;
+        UBUS_HAPD_OBJS_PTRS[UBUS_N_HAPD_OBJS] = NULL;  // Ensure NULL-terminated.
 
-static void list_cb(struct ubus_context *ctx, struct ubus_object_data *obj, void *priv) {
-    if (obj->path) {
-        list_append(obj->path);
-    } else {
-        log_error("UBUS object with no path?");
+        return;
     }
+
+    log_error("UBUS_HAPD_OBJS is full; skipping %s", name);
 }
 
-bool bpf_state__ubus__hapd_list() {
+static void ubus_hapd_objs_cb(struct ubus_context *ctx, struct ubus_object_data *obj, void *priv) {
+    if (!check_ptr("ubus_hapd_objs_cb", "ctx", ctx)) { return; }
+    if (!check_ptr("ubus_hapd_objs_cb", "obj", obj)) { return; }
+
+    ubus_hapd_objs_append(obj->path);
+}
+
+const char **bpf_state__ubus__hapd_list() {
     struct ubus_context *ctx = ubus_connect(NULL);
     if (!ctx) {
-        return false;
+        return NULL;
     }
 
-    // Clear existing list by clearing the first entry.
-    UBUS_HAPD_LIST[0][0] = '\0';
+    // Clear existing hapd objs.
+    UBUS_N_HAPD_OBJS = 0;
+    UBUS_HAPD_OBJS_PTRS[0] = NULL;
 
     int res;
-    if ((res = ubus_lookup(ctx, "hostapd.*", list_cb, NULL)) != 0) {
+    if ((res = ubus_lookup(ctx, "hostapd.*", ubus_hapd_objs_cb, NULL)) != 0) {
         log_error("UBUS (%d): %s", res, ubus_strerror(res));
-        log_error("Failed to list `hostapd` UBUS objects.");
+        log_error("Failed to list `hostapd.*` UBUS objects.");
         ubus_free(ctx);
-        return false;
+        return NULL;
     }
 
     ubus_free(ctx);
-    return true;
+    return (const char **)UBUS_HAPD_OBJS_PTRS;
 }

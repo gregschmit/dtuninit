@@ -4,6 +4,8 @@
 /dtuninit_clients.json
 /sysroot
 
+.claude/
+
 .vscode/
 
 # Created by https://www.toptal.com/developers/gitignore/api/c,linux,macos,windows,vim,emacs

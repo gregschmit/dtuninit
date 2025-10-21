@@ -572,13 +572,10 @@ int main(int argc, char *argv[]) {
     #ifdef UBUS
     } else if (!strcmp(subcommand, "ubus_list")) {
         // Undocumented subcommand for testing UBUS listing.
-        if (bpf_state__ubus__hapd_list()) {
-            for (size_t i = 0; i < UBUS_MAX_HAPD_LIST; i++) {
-                if (UBUS_HAPD_LIST[i][0]) {
-                    log_info("%s", UBUS_HAPD_LIST[i]);
-                } else {
-                    break;
-                }
+        const char **ubus_hapd_objs = bpf_state__ubus__hapd_list();
+        if (ubus_hapd_objs) {
+            for (unsigned i = 0; ubus_hapd_objs[i] != NULL; i++) {
+                log_info("%s", ubus_hapd_objs[i]);
             }
             return 0;
         } else {
