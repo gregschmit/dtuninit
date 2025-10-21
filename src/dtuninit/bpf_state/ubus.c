@@ -127,7 +127,7 @@ List *bpf_state__ubus__get_clients() {
 
     // For each obj, get the clients and add to list.
     for (unsigned i = 0; i < UBUS_N_HAPD_OBJS; i++) {
-        const char *obj_path = UBUS_HAPD_OBJS_PTRS[i];
+        const char *obj_path = UBUS_HAPD_OBJ_NAME_PTRS[i];
         if (!obj_path) { break; }
         uint32_t obj_id = UBUS_HAPD_OBJ_IDS[i];
 

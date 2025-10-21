@@ -58,6 +58,10 @@ ifeq ($(STATIC), 1)
   SHARED_ONOFF = OFF
   LDFLAGS += -static
   LDLIBS += -lelf -lz -lzstd
+
+  # Also enable link-time optimization when static linking.
+  CFLAGS += -flto
+  LDFLAGS += -flto
 else
   STATIC_ONOFF = OFF
   SHARED_ONOFF = ON
@@ -86,11 +90,18 @@ else
   # TODO: Figure out what is needed when cross compiling.
 endif
 
-# Ubus support.
+# UBUS support.
 ifeq ($(UBUS),1)
-  CFLAGS += -DUBUS -I$(UBUS_INSTALL_DIR)/include
-  LDFLAGS += -L$(UBUS_INSTALL_DIR)/lib
-  LDLIBS += -lubus
+  CFLAGS += \
+    -DUBUS \
+    -I$(JSONC_INSTALL_DIR)/include \
+    -I$(UBOX_INSTALL_DIR)/include \
+    -I$(UBUS_INSTALL_DIR)/include
+  LDFLAGS += \
+    -L$(JSONC_INSTALL_DIR)/lib \
+    -L$(UBOX_INSTALL_DIR)/lib \
+    -L$(UBUS_INSTALL_DIR)/lib
+  LDLIBS += -ljson-c -lblobmsg_json -lubox -lubus
 endif
 
 .PHONY: all
