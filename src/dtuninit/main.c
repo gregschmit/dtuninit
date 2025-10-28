@@ -53,7 +53,7 @@
     "  -B <FILE>  Set BPF object file (default: `" DEFAULT_BPF_FN "` from current dir or\n" \
     "             `" DEFAULT_BPF_PATH "`).\n" \
     "  -C <FILE>  Set clients JSON file (default: `" DEFAULT_CLIENTS_FN "` from\n" \
-    "             `current dir or `" DEFAULT_CLIENTS_PATH "`).\n" \
+    "             current dir or `" DEFAULT_CLIENTS_PATH "`).\n" \
     "  -i <IF>    Bind to selected interface (can be specified multiple times).\n"
 #define START_USAGE_S USAGE_HEADER_S \
     "Usage: dtuninit start <OPTIONS>\n" \
@@ -64,7 +64,7 @@
 #define CLIENT_GETOPT_S GLOBAL_GETOPT_S "C:"
 #define CLIENT_OPTIONS_S \
     "  -C <FILE>  Set clients JSON file (default: `" DEFAULT_CLIENTS_FN "` from\n" \
-    "             `current dir or `" DEFAULT_CLIENTS_PATH "`).\n"
+    "             current dir or `" DEFAULT_CLIENTS_PATH "`).\n"
 #define CLIENT_USAGE_S USAGE_HEADER_S \
     "Usage: dtuninit client <SUBCOMMAND> <OPTIONS>\n" \
     "\n" \
