@@ -129,5 +129,5 @@ void *list__find(List *list, const void *key) {
 }
 
 void *list__nth(List *list, size_t n) {
-    return list->items + (n * list->item_size);
+    return (uint8_t *)list->items + (n * list->item_size);
 }

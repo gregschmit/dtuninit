@@ -47,7 +47,7 @@ typedef struct {
     int socket_fd;
 
     #ifdef UBUS
-    // For watching UBUS.
+    // For watching the UBUS.
     struct ubus_context *ubus_ctx;
     int ubus_socket_fd;
     #endif
@@ -318,6 +318,7 @@ static void watch_ubus_handler_cb(
 
     // Watch for client authorized events. When one is detected, call `get_clients`,
     // and allow the file watcher to reload clients.
+    log_info("Received UBUS event: %s", type);
 
     return;
 }
@@ -336,7 +337,7 @@ static bool watch_ubus_init(BPFState *s, WatchState *ws) {
 
     // Register the event handler.
     struct ubus_event_handler listener = {.cb = watch_ubus_handler_cb};
-    if (ubus_register_event_handler(ws->ubus_ctx, &listener, "client.authorized")) {
+    if (ubus_register_event_handler(ws->ubus_ctx, &listener, "")) {
         log_error("Failed to register UBUS event handler.");
         return false;
     }
