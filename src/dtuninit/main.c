@@ -34,7 +34,7 @@
 
 #define VERSION_S "dtuninit " VERSION
 #define USAGE_HEADER_S VERSION_S "\nThe Dynamic Tunnel Initiator\n\n"
-#define GLOBAL_GETOPT_S "dh"
+#define GLOBAL_GETOPT_S "+dh"  // Leading `+` disables GNU argv mutation behavior.
 #define GLOBAL_OPTIONS_S \
     "  -d  Enable debug logging.\n" \
     "  -h  Show usage."
@@ -48,7 +48,7 @@
     "  help      Show usage.\n" \
     "\n" \
     "Global Options:\n" GLOBAL_OPTIONS_S
-#define START_GETOPT_S GLOBAL_GETOPT_S "B:C:i:"
+#define START_GETOPT_S GLOBAL_GETOPT_S "+B:C:i:"  // Leading `+` disables GNU argv mutation.
 #define START_OPTIONS_S \
     "  -B <FILE>  Set BPF object file (default: `" DEFAULT_BPF_FN "` from current dir or\n" \
     "             `" DEFAULT_BPF_PATH "`).\n" \
@@ -117,8 +117,8 @@ bool start() {
     signal(SIGTERM, interrupt_handler);
     signal(SIGQUIT, interrupt_handler);
 
-    log_info("BPF object file: `%s`.", BPF_PATH);
-    log_info("Clients file: `%s`.", CLIENTS_PATH);
+    log_info("BPF object file: `%s`", BPF_PATH);
+    log_info("Clients file: `%s`", CLIENTS_PATH);
     log_info("Loading BPF programs.");
     BPFState *state = bpf_state__open(CLIENTS_PATH, N_IFS ? IFS_PTRS : NULL);
     if (!state) {
@@ -164,7 +164,7 @@ bool client_insert() {
         return false;
     }
 
-    log_info("Clients file: `%s`.", CLIENTS_PATH);
+    log_info("Clients file: `%s`", CLIENTS_PATH);
     BPFState *state = bpf_state__open(CLIENTS_PATH, N_IFS ? IFS_PTRS : NULL);
     if (!state) {
         log_error("Failed to open BPF state.");
@@ -198,6 +198,7 @@ bool client_insert() {
         return false;
     }
 
+    log_info("Successfully inserted client: %s", INSERT_REMOVE_MAC);
     bpf_state__close(state);
     list__free(clients);
     return true;
@@ -209,7 +210,7 @@ bool client_remove() {
         return false;
     }
 
-    log_info("Clients file: `%s`.", CLIENTS_PATH);
+    log_info("Clients file: `%s`", CLIENTS_PATH);
     BPFState *state = bpf_state__open(CLIENTS_PATH, N_IFS ? IFS_PTRS : NULL);
     if (!state) {
         log_error("Failed to open BPF state.");
@@ -221,11 +222,12 @@ bool client_remove() {
         return false;
     }
 
+    log_info("Successfully removed client: %s", INSERT_REMOVE_MAC);
     bpf_state__close(state);
     return true;
 }
 
-void do_global_getopt(int argc, char *argv[]) {
+void do_global_getopt(int argc, char **argv) {
     int ch;
     while ((ch = getopt(argc, argv, GLOBAL_GETOPT_S)) != -1) {
         switch (ch) {
@@ -248,9 +250,13 @@ void do_global_getopt(int argc, char *argv[]) {
     }
 }
 
-void do_start_getopt(int argc, char *argv[]) {
+void do_start_getopt(int *rem_argc, char ***rem_argv) {
+    // Subcommand parsers: reset `optind` to 1 since we only pass remaining args.
+    optind = 1;
+
     int ch;
-    while ((ch = getopt(argc, argv, START_GETOPT_S)) != -1) {
+    // Subcommand parsers: modify `argv`/`argc` since `getopt` always skips the first argument.
+    while ((ch = getopt(*rem_argc + 1, *rem_argv - 1, START_GETOPT_S)) != -1) {
         switch (ch) {
             case 'd': {
                 DEBUG = true;
@@ -309,11 +315,19 @@ void do_start_getopt(int argc, char *argv[]) {
             }
         }
     }
+
+    // Subcommand parsers: update remaining args.
+    *rem_argc -= (optind - 1);
+    *rem_argv += (optind - 1);
 }
 
-void do_client_getopt(int argc, char *argv[]) {
+void do_client_getopt(int *rem_argc, char ***rem_argv) {
+    // Subcommand parsers: reset `optind` to 1 since we only pass remaining args.
+    optind = 1;
+
     int ch;
-    while ((ch = getopt(argc, argv, CLIENT_GETOPT_S)) != -1) {
+    // Subcommand parsers: modify `argv`/`argc` since `getopt` always skips the first argument.
+    while ((ch = getopt(*rem_argc + 1, *rem_argv - 1, CLIENT_GETOPT_S)) != -1) {
         switch (ch) {
             case 'd': {
                 DEBUG = true;
@@ -345,11 +359,18 @@ void do_client_getopt(int argc, char *argv[]) {
             }
         }
     }
+
+    // Subcommand parsers: update remaining args.
+    *rem_argc -= (optind - 1);
+    *rem_argv += (optind - 1);
 }
 
-void do_client_insert_getopt(int argc, char *argv[]) {
+void do_client_insert_getopt(int *rem_argc, char ***rem_argv) {
+    // Subcommand parsers: reset `optind` to 1 since we only pass remaining args.
+    optind = 1;
+
     int ch;
-    while ((ch = getopt(argc, argv, CLIENT_INSERT_GETOPT_S)) != -1) {
+    while ((ch = getopt(*rem_argc + 1, *rem_argv - 1, CLIENT_INSERT_GETOPT_S)) != -1) {
         switch (ch) {
             case 'd': {
                 DEBUG = true;
@@ -410,6 +431,10 @@ void do_client_insert_getopt(int argc, char *argv[]) {
             }
         }
     }
+
+    // Subcommand parsers: update remaining args.
+    *rem_argc -= (optind - 1);
+    *rem_argv += (optind - 1);
 }
 
 int main(int argc, char *argv[]) {
@@ -473,20 +498,25 @@ int main(int argc, char *argv[]) {
     // Get any prefix global options.
     do_global_getopt(argc, argv);
 
-    // First get the subcommand.
-    if (optind >= argc) {
+    // Setup some variables for tracking remaining args for proper subcommand parsing.
+    int rem_argc = argc - optind;
+    char **rem_argv = argv + optind;
+
+    // Get the subcommand.
+    if (rem_argc <= 0) {
         log_error("No subcommand specified.");
         log_info("%s", GLOBAL_USAGE_S);
         return 1;
     }
-    char *subcommand = argv[optind];
-    optind += 1;  // Move past subcommand.
+    char *subcommand = rem_argv[0];
+    rem_argc -= 1;
+    rem_argv += 1;
 
     bool success = true;
     if (!strcmp(subcommand, "start")) {
-        do_start_getopt(argc, argv);
+        do_start_getopt(&rem_argc, &rem_argv);
 
-        if (optind < argc) {
+        if (rem_argc > 0) {
             log_error("Unexpected extra positional arguments.");
             log_info("%s", START_USAGE_S);
             return 1;
@@ -502,44 +532,47 @@ int main(int argc, char *argv[]) {
 
         success = start();
     } else if (!strcmp(subcommand, "client")) {
-        do_client_getopt(argc, argv);
+        do_client_getopt(&rem_argc, &rem_argv);
 
-        if (optind >= argc) {
+        if (rem_argc <= 0) {
             log_error("No client subcommand specified.");
             log_info("%s", CLIENT_USAGE_S);
             return 1;
         }
 
-        char *client_subcommand = argv[optind];
-        optind += 1;  // Move past client subcommand.
+        char *client_subcommand = rem_argv[0];
+        rem_argc -= 1;
+        rem_argv += 1;
 
         if (!strcmp(client_subcommand, "insert")) {
-            if (optind >= argc) {
+            if (rem_argc <= 0) {
                 log_error("No MAC address specified.");
                 log_info("%s", CLIENT_INSERT_USAGE_S);
                 return 1;
             }
-            INSERT_REMOVE_MAC = argv[optind];
-            optind += 1;  // Move past MAC address.
+            INSERT_REMOVE_MAC = rem_argv[0];
+            rem_argc -= 1;
+            rem_argv += 1;
 
-            do_client_insert_getopt(argc, argv);
-            if (optind < argc) {
+            do_client_insert_getopt(&rem_argc, &rem_argv);
+            if (rem_argc > 0) {
                 log_error("Unexpected extra positional arguments.");
                 log_info("%s", CLIENT_INSERT_USAGE_S);
                 return 1;
             }
             success = client_insert();
         } else if (!strcmp(client_subcommand, "remove")) {
-            if (optind >= argc) {
+            if (rem_argc <= 0) {
                 log_error("No MAC address specified.");
                 log_info("%s", CLIENT_USAGE_S);
                 return 1;
             }
-            INSERT_REMOVE_MAC = argv[optind];
-            optind += 1;  // Move past MAC address.
+            INSERT_REMOVE_MAC = rem_argv[0];
+            rem_argc -= 1;
+            rem_argv += 1;
 
-            do_client_getopt(argc, argv);
-            if (optind < argc) {
+            do_client_getopt(&rem_argc, &rem_argv);
+            if (rem_argc > 0) {
                 log_error("Unexpected extra positional arguments.");
                 log_info("%s", CLIENT_USAGE_S);
                 return 1;
