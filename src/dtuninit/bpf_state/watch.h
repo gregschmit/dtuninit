@@ -6,6 +6,6 @@
 #include "../bpf_state.h"
 #include "../list.h"
 
-bool bpf_state__watch(BPFState *state);
+bool bpf_state__watch(BPFState *s);
 
 #endif  // BPF_STATE__WATCH_H

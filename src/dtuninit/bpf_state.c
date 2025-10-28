@@ -287,10 +287,7 @@ bool bpf_state__reload_interfaces(BPFState *s) {
 }
 
 bool bpf_state__reload_clients(BPFState *s) {
-    if (!s) {
-        log_error("No BPF state!");
-        return false;
-    }
+    if (!check_ptr("bpf_state__reload_clients", "s", s)) { return false; }
 
     // Get the map objects.
     struct bpf_map *client_map = bpf_state__get_client_map(s);
@@ -322,16 +319,6 @@ bool bpf_state__reload_clients(BPFState *s) {
 
     // Parse map file to populate the lists.
     bpf_state__clients_file__parse(s, clients, ip_cfgs);
-    if (!clients->length) {
-        list__free(clients);
-        list__free(ip_cfgs);
-        return false;
-    }
-    if (!ip_cfgs->length) {
-        list__free(clients);
-        list__free(ip_cfgs);
-        return false;
-    }
 
     // Update the IP config map.
     for (size_t i = 0; i < ip_cfgs->length; i++) {

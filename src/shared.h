@@ -49,6 +49,7 @@ typedef _Bool bool;
 #define MAX_CLIENTS 1024
 #define MAX_IFS 32
 #define MAX_IF_NAME_LEN 16  // Must be at least IFNAMSIZ (16).
+#define MAX_PROTO_LEN 16
 
 typedef enum {
     TUN_PROTO_GRE = 0,
@@ -112,10 +113,7 @@ const char *client__mac_s(const Client *c);
 const char *client__protocol_s(const Client *c);
 const char *client__peer_ip_s(const Client *c);
 
-bool client__parse_mac(Client *c, const char *mac_s);
-bool client__parse_protocol(Client *c, char *proto);
-bool client__parse_peer_ip(Client *c, const char *peer_ip_s);
-bool client__parse_vlan(Client *c, int vlan);
+bool client__parse(Client *c, const char *mac, const char *proto, const char *peer_ip, long vlan);
 
 // Key comparison functions for maps.
 bool client__key_eq(const uint8_t *key1, const uint8_t *key2);

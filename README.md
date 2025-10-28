@@ -14,6 +14,7 @@ the encapsulation and decapsulation of packets between the client and the peer (
 - Implement GRE over UDP to support NAT.
 - Implement VXLAN.
 - Implement L2TPv3.
+- Integrate some static analysis tools (clang static analysis, ubsan, cppcheck, etc).
 - Add support for IPv6 endpoints.
 
 ## Development

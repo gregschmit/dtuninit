@@ -324,50 +324,44 @@ static bool write_clients_json(const char *path, cJSON *json) {
 static bool deserialize(cJSON *client_json, Client *client) {
     if (!client_json || !client) { return false; }
 
-    // Parse the MAC address (the key).
-    const char *mac_s = client_json->string;
-    if (!mac_s) {
+    // Extract the MAC address (the key).
+    const char *mac = client_json->string;
+    if (!mac) {
         log_error("Client has no MAC address.");
         return false;
     }
-    if (!client__parse_mac(client, mac_s)) {
-        log_error("Invalid MAC address: `%s`", mac_s);
-        return false;
-    }
 
-    // Parse the protocol/subprotocol.
+    // Extract the protocol/subprotocol.
     cJSON *proto_json = cJSON_GetObjectItemCaseSensitive(client_json, "protocol");
     if (!proto_json || !cJSON_IsString(proto_json) || !proto_json->valuestring) {
-        log_error("Missing protocol for %s", mac_s);
+        log_error("Missing protocol for: %s", mac);
         return false;
     }
-    if (!client__parse_protocol(client, proto_json->valuestring)) {
-        log_error("Invalid protocol `%s` for %s", proto_json->valuestring, mac_s);
-        return false;
-    }
+    const char *proto = proto_json->valuestring;
 
-    // Parse the peer IP.
+    // Extract the peer IP.
     cJSON *peer_ip_json = cJSON_GetObjectItemCaseSensitive(client_json, "peer_ip");
     if (!peer_ip_json || !cJSON_IsString(peer_ip_json) || !peer_ip_json->valuestring) {
-        log_error("Missing peer IP for %s", mac_s);
+        log_error("Missing peer IP for: %s", mac);
         return false;
     }
-    if (!client__parse_peer_ip(client, peer_ip_json->valuestring)) {
-        log_error("Invalid peer IP `%s` for %s", peer_ip_json->valuestring, mac_s);
-        return false;
-    }
+    const char *peer_ip = peer_ip_json->valuestring;
 
-    // Parse the VLAN (optional).
+    // Extract the VLAN (optional).
     cJSON *vlan_json = cJSON_GetObjectItemCaseSensitive(client_json, "vlan");
+    int vlan = 0;
     if (vlan_json) {
         if (!cJSON_IsNumber(vlan_json)) {
-            log_error("Invalid VLAN for %s: not a number", mac_s);
+            log_error("Missing VLAN (not a number) for: %s", mac);
             return false;
         }
-        if (!client__parse_vlan(client, vlan_json->valueint)) {
-            log_error("Invalid VLAN `%d` for %s", vlan_json->valueint, mac_s);
-            return false;
-        }
+        vlan = vlan_json->valueint;
+    }
+
+    // Parse into client structure.
+    if (!client__parse(client, mac, proto, peer_ip, vlan)) {
+        log_error("Failed to parse client: %s", mac);
+        return false;
     }
 
     return true;
@@ -381,7 +375,7 @@ void bpf_state__clients_file__parse(BPFState *s, List *clients, List *ip_cfgs) {
     cJSON *json = read_clients_json(s->clients_path);
     if (!json) { return; }
 
-    // Iterate through entries, printing the key and value JSON.
+    // Iterate through entries, deserializing each one.
     cJSON *client_json = NULL;
     cJSON_ArrayForEach(client_json, json) {
         Client client = {.cycle = s->cycle};

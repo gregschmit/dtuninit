@@ -1,6 +1,8 @@
 VERSION = $(shell git describe --dirty 2>/dev/null)
 
-# Build Environment Tracking
+##############################
+# Build Environment Tracking #
+##############################
 #
 # The specified build environment variables will be tracked and we will ensure targets are rebuilt
 # when any of these change. We use conditional assignment so blank indicates to use the default
@@ -33,8 +35,12 @@ ifneq ($(BUILDENV_STATE),$(BUILDENV_STATE_OLD))
   $(shell echo "$(BUILDENV_STATE)" > $(BUILDENV))
 endif
 
+################################
+# Build Variable Configuration #
+################################
+
 # Initialize C build variables.
-COMMON_CFLAGS = -g -O$(OPT_LEVEL) -Wall
+COMMON_CFLAGS = -g -O$(OPT_LEVEL) -Wall -Wextra -Werror
 CFLAGS = $(COMMON_CFLAGS) -DVERSION=\"$(VERSION)\" -Iexternal
 LDFLAGS =
 LDLIBS = -lbpf
@@ -103,6 +109,10 @@ ifeq ($(UBUS),1)
     -L$(UBUS_INSTALL_DIR)/lib
   LDLIBS += -ljson-c -lblobmsg_json -lubox -lubus
 endif
+
+#################
+# Build Targets #
+#################
 
 .PHONY: all
 all: dtuninit_bpf.o dtuninit
@@ -178,9 +188,9 @@ USR_SRCS = \
   src/dtuninit/bpf_state.c \
   src/dtuninit/list.c \
   src/dtuninit/log.c \
+  $(if $(UBUS),src/dtuninit/ubus.c) \
   src/dtuninit/bpf_state/clients_file.c \
   src/dtuninit/bpf_state/watch.c \
-  $(if $(UBUS),src/dtuninit/bpf_state/ubus.c) \
   src/dtuninit/main.c
 USR_OBJS = $(USR_SRCS:.c=.o)
 dtuninit: src/shared.o $(JSON_LIB) $(if $(UBUS), $(UBUS_LIB)) $(USR_OBJS)

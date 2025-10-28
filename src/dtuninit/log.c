@@ -63,7 +63,7 @@ void dbg_errno(const char *label) {
 
 bool check_ptr(const char *f_name, const char *ptr_name, const void *ptr) {
     if (!ptr) {
-        log_error("%s: %s NULL pointer detected.", f_name, ptr_name);
+        log_error("NULL pointer detected in %s: `%s`!!!", f_name, ptr_name);
         return false;
     }
     return true;

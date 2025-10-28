@@ -10,6 +10,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "dtuninit/log.h"
+
 #include "shared.h"
 
 const char *client__normalize_mac(const char *s) {
@@ -76,7 +78,7 @@ const char *client__protocol_s(const Client *c) {
     if (!c) { return NULL; }
 
     // Re-use a static buffer to avoid allocations.
-    static char proto_s[16] = {0};
+    static char proto_s[MAX_PROTO_LEN] = {0};
 
     switch (c->tun_config.proto) {
         case TUN_PROTO_GRE: {
@@ -124,11 +126,15 @@ const char *client__peer_ip_s(const Client *c) {
     return peer_ip_s;
 }
 
-bool client__parse_mac(Client *c, const char *mac_s) {
-    if (!c || !mac_s) { return false; }
+static bool parse_mac(Client *c, const char *mac) {
+    if (!check_ptr("parse_mac", "c", c)) { return false; }
+    if (!check_ptr("parse_mac", "mac", mac)) { return false; }
 
-    const char *normalized_mac = client__normalize_mac(mac_s);
-    if (!normalized_mac) { return false; }
+    const char *normalized_mac = client__normalize_mac(mac);
+    if (!normalized_mac) {
+        log_error("Invalid MAC: `%s`", mac);
+        return false;
+    }
 
     if (sscanf(
         normalized_mac,
@@ -140,6 +146,7 @@ bool client__parse_mac(Client *c, const char *mac_s) {
         &c->mac[4],
         &c->mac[5]
     ) != ETH_ALEN) {
+        log_error("Invalid MAC (sscanf): `%s`", mac);
         return false;
     }
 
@@ -155,14 +162,17 @@ static char *split(char *s, char delim) {
     return d + 1;
 }
 
-bool client__parse_protocol(Client *c, char *proto) {
-    if (!c || !proto) { return false; }
+static bool parse_protocol(Client *c, const char *proto) {
+    if (!check_ptr("parse_protocol", "c", c)) { return false; }
+    if (!check_ptr("parse_protocol", "proto", proto)) { return false; }
 
     // Parse the protocol/subprotocol.
-    char *subproto = split(proto, '/');
+    static char proto_cpy[MAX_PROTO_LEN] = {0};
+    snprintf(proto_cpy, sizeof(proto_cpy), "%s", proto);
+    char *subproto = split(proto_cpy, '/');
 
     // Validate the protocol.
-    if (!strcmp(proto, "gre")) {
+    if (!strcmp(proto_cpy, "gre")) {
         c->tun_config.proto = TUN_PROTO_GRE;
         // TODO: Implement L2TP and VXLAN support.
         // } else if (!strcmp(proto, "l2tp")) {
@@ -170,6 +180,7 @@ bool client__parse_protocol(Client *c, char *proto) {
         // } else if (!strcmp(proto, "vxlan")) {
         //     c->tun_config.proto = TUN_PROTO_VXLAN;
     } else {
+        log_error("Invalid protocol: `%s`", proto);
         return false;
     }
 
@@ -180,6 +191,7 @@ bool client__parse_protocol(Client *c, char *proto) {
                 if (!strcmp(subproto, "udp")) {
                     c->tun_config.subproto.gre = TUN_GRE_SUBPROTO_UDP;
                 } else {
+                    log_error("Invalid GRE subprotocol: `%s`", subproto);
                     return false;
                 }
                 break;
@@ -188,11 +200,18 @@ bool client__parse_protocol(Client *c, char *proto) {
                 if (!strcmp(subproto, "v3")) {
                     c->tun_config.subproto.l2tp = TUN_L2TP_SUBPROTO_V3;
                 } else {
+                    log_error("Invalid L2TP subprotocol: `%s`", subproto);
                     return false;
                 }
                 break;
             }
             case TUN_PROTO_VXLAN: {
+                log_error("Invalid VXLAN subprotocol: `%s`", subproto);
+                return false;
+                break;
+            }
+            default: {
+                log_error("Invalid protocol `%s` when parsing subprotocol `%s`.", proto, subproto);
                 return false;
             }
         }
@@ -201,21 +220,36 @@ bool client__parse_protocol(Client *c, char *proto) {
     return true;
 }
 
-bool client__parse_peer_ip(Client *c, const char *peer_ip_s) {
-    if (!c || !peer_ip_s) { return false; }
+static bool parse_peer_ip(Client *c, const char *peer_ip) {
+    if (!check_ptr("parse_peer_ip", "c", c)) { return false; }
+    if (!check_ptr("parse_peer_ip", "peer_ip", peer_ip)) { return false; }
 
-    if (inet_pton(AF_INET, peer_ip_s, &c->peer_ip) != 1) {
+    if (inet_pton(AF_INET, peer_ip, &c->peer_ip) != 1) {
+        log_error("Invalid peer IP: `%s`", peer_ip);
         return false;
     }
 
     return true;
 }
 
-bool client__parse_vlan(Client *c, int vlan) {
-    if (!c) { return false; }
-    if (vlan < 1 || vlan > 4094) { return false; }
+static bool parse_vlan(Client *c, long vlan) {
+    if (!check_ptr("parse_vlan", "c", c)) { return false; }
+
+    if (vlan < 0 || vlan > 4094) {
+        log_error("Invalid VLAN ID: %ld", vlan);
+        return false;
+    }
 
     c->vlan = (uint16_t)vlan;
+    return true;
+}
+
+bool client__parse(Client *c, const char *mac, const char *proto, const char *peer_ip, long vlan) {
+    if (!parse_mac(c, mac)) { return false; }
+    if (!parse_protocol(c, proto)) { return false; }
+    if (!parse_peer_ip(c, peer_ip)) { return false; }
+    if (!parse_vlan(c, vlan)) { return false; }
+
     return true;
 }
 

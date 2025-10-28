@@ -24,7 +24,7 @@
 #include "bpf_state/watch.h"
 
 #ifdef UBUS
-#include "bpf_state/ubus.h"
+#include "ubus.h"
 #endif
 
 #define DEFAULT_CLIENTS_FN "dtuninit_clients.json"
@@ -103,9 +103,10 @@ char CLIENTS_PATH[PATH_MAX] = "";
 static char *INSERT_REMOVE_MAC = NULL;
 static char *INSERT_PROTOCOL = NULL;
 static char *INSERT_PEER_IP = NULL;
-static uint16_t INSERT_VLAN = 0;
+static long INSERT_VLAN = 0;
 
 void interrupt_handler(int _signum) {
+    (void)_signum;
     INTERRUPT = true;
 }
 
@@ -179,25 +180,11 @@ bool client_insert() {
     }
 
     Client client = {0};
-    if (!client__parse_mac(&client, INSERT_REMOVE_MAC)) {
-        log_error("Invalid MAC address: `%s`", INSERT_REMOVE_MAC);
+    if (!client__parse(&client, INSERT_REMOVE_MAC, INSERT_PROTOCOL, INSERT_PEER_IP, INSERT_VLAN)) {
         bpf_state__close(state);
         list__free(clients);
         return false;
     }
-    if (!client__parse_protocol(&client, INSERT_PROTOCOL)) {
-        log_error("Invalid protocol: `%s`", INSERT_PROTOCOL);
-        bpf_state__close(state);
-        list__free(clients);
-        return false;
-    }
-    if (!client__parse_peer_ip(&client, INSERT_PEER_IP)) {
-        log_error("Invalid peer IP: `%s`", INSERT_PEER_IP);
-        bpf_state__close(state);
-        list__free(clients);
-        return false;
-    }
-    client.vlan = INSERT_VLAN;
 
     if (!list__add(clients, &client)) {
         bpf_state__close(state);
@@ -407,13 +394,12 @@ void do_client_insert_getopt(int argc, char *argv[]) {
                     log_error("VLAN ID cannot be blank.");
                     exit(1);
                 }
-                char *endptr;
-                long vlan = strtol(optarg, &endptr, 10);
-                if (*endptr != '\0') {
+                char *endptr = NULL;
+                INSERT_VLAN = strtol(optarg, &endptr, 10);
+                if (!endptr || *endptr != '\0') {
                     log_error("Invalid VLAN ID: %s", optarg);
                     exit(1);
                 }
-                INSERT_VLAN = (uint16_t)vlan;
                 break;
             }
             default: {
@@ -572,7 +558,7 @@ int main(int argc, char *argv[]) {
     #ifdef UBUS
     } else if (!strcmp(subcommand, "ubus_list_objs")) {
         // Undocumented: for testing UBUS' ability to get hapd objs.
-        const char **ubus_hapd_objs = bpf_state__ubus__hapd_list();
+        const char **ubus_hapd_objs = bpf_state__ubus__hapd_list(NULL);
         if (ubus_hapd_objs) {
             for (unsigned i = 0; ubus_hapd_objs[i] != NULL; i++) {
                 log_info("%s", ubus_hapd_objs[i]);
@@ -583,14 +569,14 @@ int main(int argc, char *argv[]) {
         }
     } else if (!strcmp(subcommand, "ubus_list_clients")) {
         // Undocumented: for testing UBUS' ability to get clients.
-        List *clients = bpf_state__ubus__get_clients();
+        List *clients = bpf_state__ubus__get_clients(NULL);
         if (clients) {
             list__free(clients);
             return 0;
         } else {
             return 1;
         }
-    #endif
+    #endif  // UBUS
     } else {
         log_error("Unknown subcommand: `%s`.", subcommand);
         log_info("%s", GLOBAL_USAGE_S);
