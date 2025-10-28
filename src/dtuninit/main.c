@@ -547,11 +547,10 @@ int main(int argc, char *argv[]) {
             success = client_remove();
         } else if (!strcmp(client_subcommand, "help")) {
             log_info("%s", CLIENT_USAGE_S);
-            return 0;
         } else {
             log_error("Unknown client subcommand: `%s`.", client_subcommand);
             log_info("%s", CLIENT_USAGE_S);
-            return 1;
+            success = false;
         }
     } else if (!strcmp(subcommand, "help")) {
         log_info("%s", GLOBAL_USAGE_S);
@@ -563,21 +562,21 @@ int main(int argc, char *argv[]) {
             for (unsigned i = 0; ubus_hapd_objs[i] != NULL; i++) {
                 log_info("%s", ubus_hapd_objs[i]);
             }
-            return 0;
         } else {
-            return 1;
+            success = false;
         }
     } else if (!strcmp(subcommand, "ubus_list_clients")) {
         // Undocumented: for testing UBUS' ability to get clients.
         List *clients = bpf_state__ubus__get_clients(NULL);
         if (clients) {
             list__free(clients);
-            return 0;
         } else {
             return 1;
         }
     #endif  // UBUS
-    } else {
+    } else if (!strcmp(subcommand, "version")) {
+        log_info("%s", VERSION_S);
+     } else {
         log_error("Unknown subcommand: `%s`.", subcommand);
         log_info("%s", GLOBAL_USAGE_S);
         return 1;
