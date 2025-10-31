@@ -348,9 +348,9 @@ static int watch_ubus_hapd_subscriber_cb(
     log_info("Received UBUS hostapd event: %s", method);
 
     if (
-        !strcmp(method, "hostapd.sta-assoc") ||
-        !strcmp(method, "hostapd.sta-authorized") ||
-        !strcmp(method, "hostapd.sta-disassoc")
+        !strcmp(method, "assoc") ||
+        !strcmp(method, "sta-authorized") ||
+        !strcmp(method, "disassoc")
     ) {
         WS.ubus_load_clients = true;
     }
@@ -425,9 +425,10 @@ static bool watch_ubus_setup() {
         }
 
         // Subscribe to all hostapd objects using the subscribe callback.
-        if ((res = ubus_lookup(
+        res = ubus_lookup(
             WS.ubus_ctx, "hostapd.*", watch_ubus_hapd_subscribe_cb, &WS.ubus_hapd_subscriber
-        ))) {
+        );
+        if (res != 0 && res != UBUS_STATUS_NOT_FOUND) {
             log_error("UBUS error %d: %s", res, ubus_strerror(res));
             log_error("Failed to subscribe to hostapd objects.");
             return false;
