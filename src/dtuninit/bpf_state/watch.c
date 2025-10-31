@@ -56,8 +56,8 @@ typedef struct {
     struct ubus_context *ubus_ctx;
     int ubus_socket_fd;
     struct ubus_event_handler ubus_object_handler;
-    struct ubus_event_handler ubus_hapd_handler;
-    bool ubus_reload_hapd_handler;
+    struct ubus_subscriber ubus_hapd_subscriber;
+    bool ubus_reload_hapd_subscriber;
     bool ubus_load_clients;
     #endif
 } WatchState;
@@ -326,31 +326,54 @@ static void watch_ubus_object_handler_cb(
 
     log_info("Received UBUS event: %s", type);
     if (!strcmp(type, "ubus.object.add") || !strcmp(type, "ubus.object.remove")) {
-        WS.ubus_reload_hapd_handler = true;
+        WS.ubus_reload_hapd_subscriber = true;
     }
 
     return;
 }
 
-static void watch_ubus_hapd_handler_cb(
-    struct ubus_context *_c, struct ubus_event_handler *_h, const char *type, struct blob_attr *_m
+static int watch_ubus_hapd_subscriber_cb(
+    struct ubus_context *_c,
+    struct ubus_object *_o,
+    struct ubus_request_data *_r,
+    const char *method,
+    struct blob_attr *_m
 ) {
     (void)_c;
-    (void)_h;
+    (void)_o;
+    (void)_r;
     (void)_m;
-    if (!check_ptr("watch_ubus_hapd_handler_cb", "type", type)) { return; }
+    if (!check_ptr("watch_ubus_hapd_subscriber_cb", "method", method)) { return -1; }
 
-    log_info("Received UBUS event: %s", type);
+    log_info("Received UBUS hostapd event: %s", method);
 
     if (
-        !strcmp(type, "hostapd.sta-assoc") ||
-        !strcmp(type, "hostapd.sta-authorized") ||
-        !strcmp(type, "hostapd.sta-disassoc")
+        !strcmp(method, "hostapd.sta-assoc") ||
+        !strcmp(method, "hostapd.sta-authorized") ||
+        !strcmp(method, "hostapd.sta-disassoc")
     ) {
         WS.ubus_load_clients = true;
     }
 
-    return;
+    return 0;
+}
+
+static void watch_ubus_hapd_subscribe_cb(
+    struct ubus_context *ctx, struct ubus_object_data *obj, void *priv
+) {
+    if (!check_ptr("watch_ubus_hapd_subscribe_cb", "ctx", ctx)) { return; }
+    if (!check_ptr("watch_ubus_hapd_subscribe_cb", "obj", obj)) { return; }
+    if (!check_ptr("watch_ubus_hapd_subscribe_cb", "priv", priv)) { return; }
+
+    struct ubus_subscriber *sub = priv;
+
+    dbg("Subscribing to UBUS object %s (id: %u)\n", obj->path, obj->id);
+
+    // Subscribe to this object
+    int res = 0;
+    if ((res = ubus_subscribe(ctx, sub, obj->id))) {
+        log_error("UBUS error %d: %s", res, ubus_strerror(res));
+    }
 }
 
 static bool watch_ubus_init(BPFState *s) {
@@ -375,31 +398,38 @@ static bool watch_ubus_init(BPFState *s) {
         return false;
     }
 
-    // Signal the hostapd handler must be registered.
-    WS.ubus_reload_hapd_handler = true;
+    // Signal to subscribe to hostapd events.
+    WS.ubus_reload_hapd_subscriber = true;
 
     return true;
 }
 
 static bool watch_ubus_setup() {
-    // If needed, (re-)register the hostapd handler.
-    if (WS.ubus_reload_hapd_handler) {
-        WS.ubus_reload_hapd_handler = false;
+    // If needed, subscribe to hostapd events.
+    if (WS.ubus_reload_hapd_subscriber) {
+        WS.ubus_reload_hapd_subscriber = false;
+        int res = 0;
 
-        // Unregister existing handler, if any.
-        if (!WS.ubus_hapd_handler.cb) {
-            ubus_unregister_event_handler(WS.ubus_ctx, &WS.ubus_hapd_handler);
+        // Unregister existing subscriber, if any.
+        if (WS.ubus_hapd_subscriber.cb) {
+            ubus_unregister_subscriber(WS.ubus_ctx, &WS.ubus_hapd_subscriber);
         }
 
-        // Register the hostapd event handler.
-        memset(&WS.ubus_hapd_handler, 0, sizeof(WS.ubus_hapd_handler));
-        WS.ubus_hapd_handler.cb = watch_ubus_hapd_handler_cb;
-        int res = 0;
-        if (
-            (res = ubus_register_event_handler(WS.ubus_ctx, &WS.ubus_hapd_handler, "hostapd.*"))
-        ) {
+        // Register the hostapd subscriber.
+        memset(&WS.ubus_hapd_subscriber, 0, sizeof(WS.ubus_hapd_subscriber));
+        WS.ubus_hapd_subscriber.cb = watch_ubus_hapd_subscriber_cb;
+        if ((res = ubus_register_subscriber(WS.ubus_ctx, &WS.ubus_hapd_subscriber))) {
             log_error("UBUS error %d: %s", res, ubus_strerror(res));
-            log_error("Failed to register UBUS hostapd event handler.");
+            log_error("Failed to register hostapd subscriber.");
+            return false;
+        }
+
+        // Subscribe to all hostapd objects using the subscribe callback.
+        if ((res = ubus_lookup(
+            WS.ubus_ctx, "hostapd.*", watch_ubus_hapd_subscribe_cb, &WS.ubus_hapd_subscriber
+        ))) {
+            log_error("UBUS error %d: %s", res, ubus_strerror(res));
+            log_error("Failed to subscribe to hostapd objects.");
             return false;
         }
     }
@@ -412,9 +442,9 @@ static void watch_ubus_cleanup() {
         return;
     }
 
-    if (WS.ubus_hapd_handler.cb) {
-        ubus_unregister_event_handler(WS.ubus_ctx, &WS.ubus_hapd_handler);
-        memset(&WS.ubus_hapd_handler, 0, sizeof(WS.ubus_hapd_handler));
+    if (WS.ubus_hapd_subscriber.cb) {
+        ubus_unregister_subscriber(WS.ubus_ctx, &WS.ubus_hapd_subscriber);
+        memset(&WS.ubus_hapd_subscriber, 0, sizeof(WS.ubus_hapd_subscriber));
     }
     if (WS.ubus_object_handler.cb) {
         ubus_unregister_event_handler(WS.ubus_ctx, &WS.ubus_object_handler);
