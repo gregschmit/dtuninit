@@ -590,7 +590,7 @@ int main(int argc, char *argv[]) {
     #ifdef UBUS
     } else if (!strcmp(subcommand, "ubus_list_objs")) {
         // Undocumented: for testing UBUS' ability to get hapd objs.
-        const char **ubus_hapd_objs = bpf_state__ubus__hapd_list(NULL);
+        const char **ubus_hapd_objs = ubus__hapd_list(NULL);
         if (ubus_hapd_objs) {
             for (unsigned i = 0; ubus_hapd_objs[i] != NULL; i++) {
                 log_info("%s", ubus_hapd_objs[i]);
@@ -600,7 +600,7 @@ int main(int argc, char *argv[]) {
         }
     } else if (!strcmp(subcommand, "ubus_list_clients")) {
         // Undocumented: for testing UBUS' ability to get clients.
-        List *clients = bpf_state__ubus__get_clients(NULL);
+        List *clients = ubus__get_clients(NULL);
         if (clients) {
             list__free(clients);
         } else {

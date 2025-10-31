@@ -56,8 +56,8 @@ static bool ubus_populate_hapd_objs(struct ubus_context *ctx) {
     UBUS_N_HAPD_OBJS = 0;
     UBUS_HAPD_OBJ_NAME_PTRS[0] = NULL;
 
-    int res;
-    if ((res = ubus_lookup(ctx, "hostapd.*", ubus_hapd_objs_cb, NULL)) != 0) {
+    int res = 0;
+    if ((res = ubus_lookup(ctx, "hostapd.*", ubus_hapd_objs_cb, NULL))) {
         log_error("UBUS error %d: %s", res, ubus_strerror(res));
         log_error("Failed to lookup `hostapd.*` UBUS objects.");
         return false;
@@ -66,7 +66,7 @@ static bool ubus_populate_hapd_objs(struct ubus_context *ctx) {
     return true;
 }
 
-const char **bpf_state__ubus__hapd_list(struct ubus_context *ctx) {
+const char **ubus__hapd_list(struct ubus_context *ctx) {
     bool input_ctx = ctx;
     if (!ctx) { ctx = ubus_connect(NULL); }
     if (!ctx) {
@@ -263,7 +263,7 @@ static bool ubus_get_clients(struct ubus_context *ctx, uint32_t id, List *client
     return true;
 }
 
-List *bpf_state__ubus__get_clients(struct ubus_context *ctx) {
+List *ubus__get_clients(struct ubus_context *ctx) {
     bool input_ctx = ctx;
     if (!ctx) { ctx = ubus_connect(NULL); }
     if (!ctx) {

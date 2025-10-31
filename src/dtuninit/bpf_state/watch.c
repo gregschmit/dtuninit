@@ -18,8 +18,13 @@
 #include <unistd.h>
 
 #include "../log.h"
+#include "clients_file.h"
 
 #include "watch.h"
+
+#ifdef UBUS
+#include "../ubus.h"
+#endif
 
 #define EVENT_SIZE (sizeof(struct inotify_event))
 #define BUF_LEN (EVENT_SIZE + NAME_MAX + 1)
@@ -50,12 +55,25 @@ typedef struct {
     // For watching the UBUS.
     struct ubus_context *ubus_ctx;
     int ubus_socket_fd;
+    struct ubus_event_handler ubus_object_handler;
+    struct ubus_event_handler ubus_hapd_handler;
+    bool ubus_reload_hapd_handler;
+    bool ubus_load_clients;
     #endif
 } WatchState;
 
-static bool watch_file_init(BPFState *s, WatchState *ws) {
+// Use a single static instance for simplicity.
+static WatchState WS = {
+    .inotify_fd = -1,
+    .inotify_wd = -1,
+    .socket_fd = -1,
+    #ifdef UBUS
+    .ubus_socket_fd = -1,
+    #endif
+};
+
+static bool watch_file_init(BPFState *s) {
     if (!check_ptr("watch_file_init", "s", s)) { return false; }
-    if (!check_ptr("watch_file_init", "ws", ws)) { return false; }
 
     // Extract the directory path and file name. We need them separately because we conditionally
     // watch either the file or the directory (if the file doesn't exist). We also re-create the
@@ -63,47 +81,46 @@ static bool watch_file_init(BPFState *s, WatchState *ws) {
     // representation (e.g., `file.json` becomes `./file.json`).
     char tmp[PATH_MAX];
     snprintf(tmp, sizeof(tmp), "%s", s->clients_path);
-    snprintf(ws->fn, sizeof(ws->fn), "%s", basename(tmp));
-    snprintf(ws->dpath, sizeof(ws->dpath), "%s", dirname(tmp));
-    snprintf(ws->fpath, sizeof(ws->fpath), "%s/%s", ws->dpath, ws->fn);
+    snprintf(WS.fn, sizeof(WS.fn), "%s", basename(tmp));
+    snprintf(WS.dpath, sizeof(WS.dpath), "%s", dirname(tmp));
+    snprintf(WS.fpath, sizeof(WS.fpath), "%s/%s", WS.dpath, WS.fn);
 
     // Initialize `inotify`.
-    ws->inotify_fd = inotify_init();
-    if (ws->inotify_fd < 0) {
+    WS.inotify_fd = inotify_init();
+    if (WS.inotify_fd < 0) {
         log_errno("inotify_init");
         return false;
     }
-    ws->inotify_wd = -1;
+    WS.inotify_wd = -1;
 
     return true;
 }
 
-static bool watch_file_setup(BPFState *s, WatchState *ws) {
+static bool watch_file_setup(BPFState *s) {
     if (!check_ptr("watch_file_setup", "s", s)) { return false; }
-    if (!check_ptr("watch_file_setup", "ws", ws)) { return false; }
 
-    // If `ws->inotify_wd < 0`, then try to watch the file.
-    if (ws->inotify_wd < 0) {
-        ws->inotify_wd_is_dir = false;
-        ws->inotify_wd = inotify_add_watch(
-            ws->inotify_fd, ws->fpath, IN_MODIFY | IN_MOVE_SELF | IN_DELETE_SELF
+    // If `WS.inotify_wd < 0`, then try to watch the file.
+    if (WS.inotify_wd < 0) {
+        WS.inotify_wd_is_dir = false;
+        WS.inotify_wd = inotify_add_watch(
+            WS.inotify_fd, WS.fpath, IN_MODIFY | IN_MOVE_SELF | IN_DELETE_SELF
         );
-        if (ws->inotify_wd < 0) {
+        if (WS.inotify_wd < 0) {
             if (errno == ENOENT) {
                 // If file doesn't exist, then watch parent directory.
-                dbg("Clients file not found; watching parent directory: %s", ws->dpath);
-                ws->inotify_wd_is_dir = true;
-                ws->inotify_wd = inotify_add_watch(
-                    ws->inotify_fd, ws->dpath, IN_CREATE | IN_MOVED_TO
+                dbg("Clients file not found; watching parent directory: %s", WS.dpath);
+                WS.inotify_wd_is_dir = true;
+                WS.inotify_wd = inotify_add_watch(
+                    WS.inotify_fd, WS.dpath, IN_CREATE | IN_MOVED_TO
                 );
-                if (ws->inotify_wd < 0) {
+                if (WS.inotify_wd < 0) {
                     log_errno("inotify_add_watch");
-                    log_error("Failed to watch %s.", ws->dpath);
+                    log_error("Failed to watch %s.", WS.dpath);
                     return false;
                 }
             } else {
                 log_errno("inotify_add_watch");
-                log_error("Failed to watch %s.", ws->fpath);
+                log_error("Failed to watch %s.", WS.fpath);
                 return false;
             }
         }
@@ -112,27 +129,24 @@ static bool watch_file_setup(BPFState *s, WatchState *ws) {
     return true;
 }
 
-static void watch_file_cleanup(WatchState *ws) {
-    if (!check_ptr("watch_file_cleanup", "ws", ws)) { return; }
-
-    if (ws->inotify_wd >= 0) {
-        inotify_rm_watch(ws->inotify_fd, ws->inotify_wd);
-        ws->inotify_wd = -1;
+static void watch_file_cleanup() {
+    if (WS.inotify_wd >= 0) {
+        inotify_rm_watch(WS.inotify_fd, WS.inotify_wd);
+        WS.inotify_wd = -1;
     }
 
-    if (ws->inotify_fd >= 0) {
-        close(ws->inotify_fd);
-        ws->inotify_fd = -1;
+    if (WS.inotify_fd >= 0) {
+        close(WS.inotify_fd);
+        WS.inotify_fd = -1;
     }
 }
 
-static bool watch_file_handler(BPFState *s, WatchState *ws) {
+static bool watch_file_handler(BPFState *s) {
     if (!check_ptr("watch_file_handler", "s", s)) { return false; }
-    if (!check_ptr("watch_file_handler", "ws", ws)) { return false; }
 
     // Now read the event.
     char buf[BUF_LEN];
-    int length = read(ws->inotify_fd, buf, sizeof(buf));
+    int length = read(WS.inotify_fd, buf, sizeof(buf));
     if (length < 0) {
         log_errno("read");
         log_error("Failed to read inotify event.");
@@ -148,8 +162,8 @@ static bool watch_file_handler(BPFState *s, WatchState *ws) {
     bool reload = false;
     while (offset < length) {
         struct inotify_event *event = (struct inotify_event *)&buf[offset];
-        if (ws->inotify_wd_is_dir) {
-            if (event->len > 0 && !strcmp(event->name, ws->fn)) {
+        if (WS.inotify_wd_is_dir) {
+            if (event->len > 0 && !strcmp(event->name, WS.fn)) {
                 if (event->mask & IN_CREATE) {
                     dbg("%s created.", event->name);
                     break;
@@ -162,41 +176,41 @@ static bool watch_file_handler(BPFState *s, WatchState *ws) {
                 }
 
                 reload = true;
-                if (ws->inotify_wd >= 0) {
-                    if (!inotify_rm_watch(ws->inotify_fd, ws->inotify_wd)) {
+                if (WS.inotify_wd >= 0) {
+                    if (!inotify_rm_watch(WS.inotify_fd, WS.inotify_wd)) {
                         log_errno("inotify_rm_watch");
-                        log_error("Failed to remove watch on %s.", ws->dpath);
+                        log_error("Failed to remove watch on %s.", WS.dpath);
                         return false;
                     }
-                    ws->inotify_wd = -1;
+                    WS.inotify_wd = -1;
                 }
             }
         } else {
             if (event->mask & IN_MODIFY) {
-                dbg("%s modified.", ws->fpath);
+                dbg("%s modified.", WS.fpath);
                 reload = true;
             } else if (event->mask & IN_MOVE_SELF) {
-                dbg("%s moved out.", ws->fpath);
+                dbg("%s moved out.", WS.fpath);
                 reload = true;
-                if (ws->inotify_wd >= 0) {
-                    if (!inotify_rm_watch(ws->inotify_fd, ws->inotify_wd)) {
+                if (WS.inotify_wd >= 0) {
+                    if (!inotify_rm_watch(WS.inotify_fd, WS.inotify_wd)) {
                         log_errno("inotify_rm_watch");
-                        log_error("Failed to remove watch on %s.", ws->fpath);
+                        log_error("Failed to remove watch on %s.", WS.fpath);
                         return false;
                     }
-                    ws->inotify_wd = -1;
+                    WS.inotify_wd = -1;
                 }
                 break;
             } else if (event->mask & IN_DELETE_SELF) {
-                dbg("%s deleted.", ws->fpath);
+                dbg("%s deleted.", WS.fpath);
                 reload = true;
-                if (ws->inotify_wd >= 0) {
-                    if (!inotify_rm_watch(ws->inotify_fd, ws->inotify_wd)) {
+                if (WS.inotify_wd >= 0) {
+                    if (!inotify_rm_watch(WS.inotify_fd, WS.inotify_wd)) {
                         log_errno("inotify_rm_watch");
-                        log_error("Failed to remove watch on %s.", ws->fpath);
+                        log_error("Failed to remove watch on %s.", WS.fpath);
                         return false;
                     }
-                    ws->inotify_wd = -1;
+                    WS.inotify_wd = -1;
                 }
                 break;
             }
@@ -219,40 +233,36 @@ static bool watch_file_handler(BPFState *s, WatchState *ws) {
     return true;
 }
 
-static bool watch_network_init(BPFState *s, WatchState *ws) {
+static bool watch_network_init(BPFState *s) {
     if (!check_ptr("watch_network_init", "s", s)) { return false; }
-    if (!check_ptr("watch_network_init", "ws", ws)) { return false; }
 
-    ws->socket_fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+    WS.socket_fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
     struct sockaddr_nl addr = {.nl_family = AF_NETLINK, .nl_groups = RTMGRP_LINK};
     addr.nl_pid = getpid();
-    if (bind(ws->socket_fd, (struct sockaddr *)&addr, sizeof(addr))) {
+    if (bind(WS.socket_fd, (struct sockaddr *)&addr, sizeof(addr))) {
         log_errno("bind");
         log_error("Failed to bind netlink socket.");
-        close(ws->socket_fd);
+        close(WS.socket_fd);
         return false;
     }
 
     return true;
 }
 
-static void watch_network_cleanup(WatchState *ws) {
-    if (!check_ptr("watch_network_cleanup", "ws", ws)) { return; }
-
-    if (ws->socket_fd >= 0) {
-        close(ws->socket_fd);
-        ws->socket_fd = -1;
+static void watch_network_cleanup() {
+    if (WS.socket_fd >= 0) {
+        close(WS.socket_fd);
+        WS.socket_fd = -1;
     }
 }
 
-static bool watch_network_handler(BPFState *s, WatchState *ws) {
+static bool watch_network_handler(BPFState *s) {
     if (!check_ptr("watch_network_handler", "s", s)) { return false; }
-    if (!check_ptr("watch_network_handler", "ws", ws)) { return false; }
 
     bool reload = false;
     char buf[4096] = {0};
 
-    ssize_t len = recv(ws->socket_fd, buf, sizeof(buf), 0);
+    ssize_t len = recv(WS.socket_fd, buf, sizeof(buf), 0);
     if (len < 0) {
         log_errno("recv");
         log_error("Failed to receive netlink message.");
@@ -306,53 +316,137 @@ static bool watch_network_handler(BPFState *s, WatchState *ws) {
 // Core UBUS integration.
 #ifdef UBUS
 
-#include "../ubus.h"
-
-static void watch_ubus_handler_cb(
-    struct ubus_context *ctx, struct ubus_event_handler *ev, const char *type, struct blob_attr *msg
+static void watch_ubus_object_handler_cb(
+    struct ubus_context *_c, struct ubus_event_handler *_h, const char *type, struct blob_attr *_m
 ) {
-    if (!check_ptr("watch_ubus_handler_cb", "ctx", ctx)) { return; }
-    if (!check_ptr("watch_ubus_handler_cb", "ev", ev)) { return; }
-    if (!check_ptr("watch_ubus_handler_cb", "type", type)) { return; }
-    if (!check_ptr("watch_ubus_handler_cb", "msg", msg)) { return; }
+    (void)_c;
+    (void)_h;
+    (void)_m;
+    if (!check_ptr("watch_ubus_object_handler_cb", "type", type)) { return; }
 
-    // Watch for client authorized events. When one is detected, call `get_clients`,
-    // and allow the file watcher to reload clients.
     log_info("Received UBUS event: %s", type);
+    if (!strcmp(type, "ubus.object.add") || !strcmp(type, "ubus.object.remove")) {
+        WS.ubus_reload_hapd_handler = true;
+    }
 
     return;
 }
 
-static bool watch_ubus_init(BPFState *s, WatchState *ws) {
+static void watch_ubus_hapd_handler_cb(
+    struct ubus_context *_c, struct ubus_event_handler *_h, const char *type, struct blob_attr *_m
+) {
+    (void)_c;
+    (void)_h;
+    (void)_m;
+    if (!check_ptr("watch_ubus_hapd_handler_cb", "type", type)) { return; }
+
+    log_info("Received UBUS event: %s", type);
+
+    if (
+        !strcmp(type, "hostapd.sta-assoc") ||
+        !strcmp(type, "hostapd.sta-authorized") ||
+        !strcmp(type, "hostapd.sta-disassoc")
+    ) {
+        WS.ubus_load_clients = true;
+    }
+
+    return;
+}
+
+static bool watch_ubus_init(BPFState *s) {
     if (!check_ptr("watch_ubus_init", "s", s)) { return false; }
-    if (!check_ptr("watch_ubus_init", "ws", ws)) { return false; }
 
     // Connect to the UBUS.
-    ws->ubus_ctx = ubus_connect(NULL);
-    if (!ws->ubus_ctx) {
+    WS.ubus_ctx = ubus_connect(NULL);
+    if (!WS.ubus_ctx) {
         log_error("Failed to connect to UBUS.");
         return false;
     }
-    ws->ubus_socket_fd = ws->ubus_ctx->sock.fd;
+    WS.ubus_socket_fd = WS.ubus_ctx->sock.fd;
 
-    // Register the event handler.
-    struct ubus_event_handler listener = {.cb = watch_ubus_handler_cb};
-    if (ubus_register_event_handler(ws->ubus_ctx, &listener, "")) {
-        log_error("Failed to register UBUS event handler.");
+    // Register the object event handler.
+    WS.ubus_object_handler.cb = watch_ubus_object_handler_cb;
+    int res = 0;
+    if (
+        (res = ubus_register_event_handler(WS.ubus_ctx, &WS.ubus_object_handler, "ubus.object.*"))
+    ) {
+        log_error("UBUS error %d: %s", res, ubus_strerror(res));
+        log_error("Failed to register UBUS object event handler.");
         return false;
+    }
+
+    // Signal the hostapd handler must be registered.
+    WS.ubus_reload_hapd_handler = true;
+
+    return true;
+}
+
+static bool watch_ubus_setup() {
+    // If needed, (re-)register the hostapd handler.
+    if (WS.ubus_reload_hapd_handler) {
+        WS.ubus_reload_hapd_handler = false;
+
+        // Unregister existing handler, if any.
+        if (!WS.ubus_hapd_handler.cb) {
+            ubus_unregister_event_handler(WS.ubus_ctx, &WS.ubus_hapd_handler);
+        }
+
+        // Register the hostapd event handler.
+        memset(&WS.ubus_hapd_handler, 0, sizeof(WS.ubus_hapd_handler));
+        WS.ubus_hapd_handler.cb = watch_ubus_hapd_handler_cb;
+        int res = 0;
+        if (
+            (res = ubus_register_event_handler(WS.ubus_ctx, &WS.ubus_hapd_handler, "hostapd.*"))
+        ) {
+            log_error("UBUS error %d: %s", res, ubus_strerror(res));
+            log_error("Failed to register UBUS hostapd event handler.");
+            return false;
+        }
     }
 
     return true;
 }
 
-static void watch_ubus_cleanup(WatchState *ws) {
-    if (!check_ptr("watch_ubus_cleanup", "ws", ws)) { return; }
-
-    if (ws->ubus_ctx) {
-        ubus_free(ws->ubus_ctx);
-        ws->ubus_ctx = NULL;
-        ws->ubus_socket_fd = -1;
+static void watch_ubus_cleanup() {
+    if (!WS.ubus_ctx) {
+        return;
     }
+
+    if (WS.ubus_hapd_handler.cb) {
+        ubus_unregister_event_handler(WS.ubus_ctx, &WS.ubus_hapd_handler);
+        memset(&WS.ubus_hapd_handler, 0, sizeof(WS.ubus_hapd_handler));
+    }
+    if (WS.ubus_object_handler.cb) {
+        ubus_unregister_event_handler(WS.ubus_ctx, &WS.ubus_object_handler);
+        memset(&WS.ubus_object_handler, 0, sizeof(WS.ubus_object_handler));
+    }
+    ubus_free(WS.ubus_ctx);
+    WS.ubus_ctx = NULL;
+    WS.ubus_socket_fd = -1;
+}
+
+static bool watch_ubus_handler(BPFState *s) {
+    if (!check_ptr("watch_ubus_handler", "s", s)) { return false; }
+
+    ubus_handle_event(WS.ubus_ctx);
+
+    if (WS.ubus_load_clients) {
+        WS.ubus_load_clients = false;
+        log_info("Writing UBUS clients to the clients file.");
+        List *clients = ubus__get_clients(WS.ubus_ctx);
+        if (!clients) {
+            log_error("Failed to get UBUS clients.");
+            return false;
+        }
+        if (!bpf_state__clients_file__replace(s, clients)) {
+            log_error("Failed to write UBUS clients to the clients file.");
+            list__free(clients);
+            return false;
+        }
+        list__free(clients);
+    }
+
+    return true;
 }
 
 #endif  // UBUS
@@ -360,18 +454,16 @@ static void watch_ubus_cleanup(WatchState *ws) {
 bool bpf_state__watch(BPFState *s) {
     if (!check_ptr("watch_init", "s", s)) { return false; }
 
-    WatchState ws = {0};
-
     log_info("Initializing watch state.");
-    if (!watch_file_init(s, &ws)) { return false; }
-    if (!watch_network_init(s, &ws)) {
-        watch_file_cleanup(&ws);
+    if (!watch_file_init(s)) { return false; }
+    if (!watch_network_init(s)) {
+        watch_file_cleanup();
         return false;
     }
     #ifdef UBUS
-    if (!watch_ubus_init(s, &ws)) {
-        watch_network_cleanup(&ws);
-        watch_file_cleanup(&ws);
+    if (!watch_ubus_init(s)) {
+        watch_network_cleanup();
+        watch_file_cleanup();
         return false;
     }
     #endif  // UBUS
@@ -386,14 +478,15 @@ bool bpf_state__watch(BPFState *s) {
             break;
         }
 
-        if (!watch_file_setup(s, &ws)) { break; }
+        if (!watch_file_setup(s)) { break; }
+        if (!watch_ubus_setup()) { break; }
 
         // Setup event fds.
         struct pollfd pfds[N_EVENTS] = {
-            {.fd = ws.inotify_fd, .events = POLLIN},
-            {.fd = ws.socket_fd, .events = POLLIN},
+            {.fd = WS.inotify_fd, .events = POLLIN},
+            {.fd = WS.socket_fd, .events = POLLIN},
             #ifdef UBUS
-            {.fd = ws.ubus_socket_fd, .events = POLLIN},
+            {.fd = WS.ubus_socket_fd, .events = POLLIN},
             #endif  // UBUS
         };
 
@@ -409,33 +502,70 @@ bool bpf_state__watch(BPFState *s) {
 
         // Handle events.
         int handled_fds = 0;
-        if (pfds[0].revents & POLLIN) {
+        if (pfds[0].revents) {
             handled_fds++;
-            if (!watch_file_handler(s, &ws)) { break; }
+
+            if (pfds[0].revents & POLLERR) {
+                log_error("File: POLLERR");
+                break;
+            } else if (pfds[0].revents & POLLHUP) {
+                log_error("File: POLLHUP");
+                break;
+            } else if (pfds[0].revents & POLLNVAL) {
+                log_error("File: POLLNVAL");
+                break;
+            } else if (pfds[0].revents & POLLIN) {
+                if (!watch_file_handler(s)) { break; }
+            }
         }
-        if (pfds[1].revents & POLLIN) {
+        if (pfds[1].revents) {
             handled_fds++;
-            if (!watch_network_handler(s, &ws)) { break; }
+
+            if (pfds[1].revents & POLLERR) {
+                log_error("Network: POLLERR");
+                break;
+            } else if (pfds[1].revents & POLLHUP) {
+                log_error("Network: POLLHUP");
+                break;
+            } else if (pfds[1].revents & POLLNVAL) {
+                log_error("Network: POLLNVAL");
+                break;
+            } else if (pfds[1].revents & POLLIN) {
+                if (!watch_network_handler(s)) { break; }
+            }
         }
         #ifdef UBUS
-        if (pfds[2].revents & POLLIN) {
+        if (pfds[2].revents) {
             handled_fds++;
-            ubus_handle_event(ws.ubus_ctx);
+
+            if (pfds[2].revents & POLLERR) {
+                log_error("UBUS: POLLERR");
+                break;
+            } else if (pfds[2].revents & POLLHUP) {
+                log_error("UBUS: POLLHUP");
+                break;
+            } else if (pfds[2].revents & POLLNVAL) {
+                log_error("UBUS: POLLNVAL");
+                break;
+            } else if (pfds[2].revents & POLLIN) {
+                if (!watch_ubus_handler(s)) { break; }
+            }
         }
         #endif  // UBUS
 
         // Check that we handled the expected number of fds.
         if (handled_fds != returned_fds) {
             log_error("Unexpected fds from `poll` (%d != %d).", handled_fds, returned_fds);
+            break;
         }
     }
 
     log_info("Cleaning up watch state.");
     #ifdef UBUS
-    watch_ubus_cleanup(&ws);
+    watch_ubus_cleanup();
     #endif  // UBUS
-    watch_network_cleanup(&ws);
-    watch_file_cleanup(&ws);
+    watch_network_cleanup();
+    watch_file_cleanup();
 
     return success;
 }

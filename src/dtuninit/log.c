@@ -10,6 +10,7 @@
 
 #define ENABLE_RED() if (COLOR) { fprintf(stderr, "\033[1;31m"); }
 #define ENABLE_YELLOW() if (COLOR) { fprintf(stderr, "\033[1;33m"); }
+#define ENABLE_CYAN() if (COLOR) { fprintf(stderr, "\033[1;36m"); }
 #define DISABLE_COLOR() if (COLOR) { fprintf(stderr, "\033[0m"); }
 
 bool DEBUG = false;
@@ -44,7 +45,7 @@ void log_errno(const char *label) {
 void dbg(const char *msg, ...) {
     if (!DEBUG) { return; }
 
-    ENABLE_YELLOW()
+    ENABLE_CYAN()
     va_list args;
     va_start(args, msg);
     vfprintf(stderr, msg, args);
@@ -56,7 +57,7 @@ void dbg(const char *msg, ...) {
 void dbg_errno(const char *label) {
     if (!DEBUG) { return; }
 
-    ENABLE_YELLOW()
+    ENABLE_CYAN()
     fprintf(stderr, "(%s) %s\n", label, strerror(errno));
     DISABLE_COLOR()
 }

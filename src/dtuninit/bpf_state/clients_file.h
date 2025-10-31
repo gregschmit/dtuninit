@@ -12,5 +12,6 @@ void bpf_state__clients_file__parse(BPFState *s, List *clients, List *ip_cfgs);
 bool bpf_state__clients_file__insert(BPFState *s, List *clients);
 bool bpf_state__clients_file__remove_s(BPFState *s, const char *mac_s);
 bool bpf_state__clients_file__remove(BPFState *s, uint8_t mac[ETH_ALEN]);
+bool bpf_state__clients_file__replace(BPFState *s, List *clients);
 
 #endif  // BPF_STATE__CLIENTS_FILE_H

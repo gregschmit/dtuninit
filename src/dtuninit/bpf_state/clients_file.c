@@ -576,3 +576,26 @@ bool bpf_state__clients_file__remove(BPFState *s, uint8_t mac[ETH_ALEN]) {
 
     return bpf_state__clients_file__remove_s(s, mac_s);
 }
+
+bool bpf_state__clients_file__replace(BPFState *s, List *clients) {
+    if (!check_ptr("bpf_state__clients_file__replace", "s", s)) { return false; }
+    if (!check_ptr("bpf_state__clients_file__replace", "clients", clients)) { return false; }
+
+    cJSON *json = cJSON_CreateObject();
+    if (!json) {
+        log_error("Failed to create clients JSON object.");
+        return false;
+    }
+
+    // Insert each client into the JSON object.
+    for (size_t i = 0; i < clients->length; i++) {
+        Client client = ((Client *)clients->items)[i];
+        serialize(json, &client);
+    }
+
+    // Write the updated JSON back to the file.
+    bool success = write_clients_json(s->clients_path, json);
+
+    cJSON_Delete(json);
+    return success;
+}
