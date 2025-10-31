@@ -467,10 +467,16 @@ static bool watch_ubus_handler(BPFState *s) {
     if (WS.ubus_load_clients) {
         WS.ubus_load_clients = false;
         log_info("Writing UBUS clients to the clients file.");
+
+        // Get the clients from UBUS.
         List *clients = ubus__get_clients(WS.ubus_ctx);
         if (!clients) {
             log_error("Failed to get UBUS clients.");
-            return false;
+
+            // Since `ubus_handle_event` can handle multiple events, there is sometimes a race where
+            // an event triggers `ubus_load_clients` but then a subsequent event signals the ubus
+            // object was removed. For that reason, don't treat this as a fatal error.
+            return true;
         }
         if (!bpf_state__clients_file__replace(s, clients)) {
             log_error("Failed to write UBUS clients to the clients file.");
