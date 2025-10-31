@@ -29,9 +29,8 @@
 #define EVENT_SIZE (sizeof(struct inotify_event))
 #define BUF_LEN (EVENT_SIZE + NAME_MAX + 1)
 
-// This can be longer to reduce CPU usage, but too long will mean a longer delay on average when
-// exiting from an interrupt.
-#define TIMEOUT_SEC 5
+// This can be pretty long since we just wait with `poll`.
+#define TIMEOUT_SEC 30
 
 // We need to statically know how many events we will poll for later.
 #ifdef UBUS
