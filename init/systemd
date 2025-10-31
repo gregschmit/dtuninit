@@ -9,7 +9,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/dtuninit
+ExecStart=/usr/bin/dtuninit start -U
 Restart=always
 RestartSec=5s
 

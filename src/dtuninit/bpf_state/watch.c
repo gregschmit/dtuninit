@@ -28,7 +28,10 @@
 
 #define EVENT_SIZE (sizeof(struct inotify_event))
 #define BUF_LEN (EVENT_SIZE + NAME_MAX + 1)
-#define TIMEOUT 1
+
+// This can be longer to reduce CPU usage, but too long will mean a longer delay on average when
+// exiting from an interrupt.
+#define TIMEOUT_SEC 5
 
 // We need to statically know how many events we will poll for later.
 #ifdef UBUS
@@ -38,6 +41,7 @@
 #endif
 
 extern volatile bool INTERRUPT;
+extern bool UBUS_ENABLE;
 
 typedef struct {
     // For watching the clients file.
@@ -367,7 +371,7 @@ static void watch_ubus_hapd_subscribe_cb(
 
     struct ubus_subscriber *sub = priv;
 
-    dbg("Subscribing to UBUS object %s (id: %u)\n", obj->path, obj->id);
+    dbg("Subscribing to UBUS object %s (id: %u)", obj->path, obj->id);
 
     // Subscribe to this object
     int res = 0;
@@ -492,7 +496,7 @@ bool bpf_state__watch(BPFState *s) {
         return false;
     }
     #ifdef UBUS
-    if (!watch_ubus_init(s)) {
+    if (UBUS_ENABLE && !watch_ubus_init(s)) {
         watch_network_cleanup();
         watch_file_cleanup();
         return false;
@@ -510,7 +514,9 @@ bool bpf_state__watch(BPFState *s) {
         }
 
         if (!watch_file_setup(s)) { break; }
-        if (!watch_ubus_setup()) { break; }
+        #ifdef UBUS
+        if (UBUS_ENABLE && !watch_ubus_setup()) { break; }
+        #endif  // UBUS
 
         // Setup event fds.
         struct pollfd pfds[N_EVENTS] = {
@@ -522,7 +528,7 @@ bool bpf_state__watch(BPFState *s) {
         };
 
         // Wait for events.
-        int returned_fds = poll(pfds, N_EVENTS, TIMEOUT * 1000);
+        int returned_fds = poll(pfds, UBUS_ENABLE ? N_EVENTS : N_EVENTS - 1, TIMEOUT_SEC * 1000);
         if (returned_fds < 0) {
             dbg_errno("poll");
             break;
@@ -566,7 +572,7 @@ bool bpf_state__watch(BPFState *s) {
             }
         }
         #ifdef UBUS
-        if (pfds[2].revents) {
+        if (UBUS_ENABLE && pfds[2].revents) {
             handled_fds++;
 
             if (pfds[2].revents & POLLERR) {
@@ -593,7 +599,7 @@ bool bpf_state__watch(BPFState *s) {
 
     log_info("Cleaning up watch state.");
     #ifdef UBUS
-    watch_ubus_cleanup();
+    if (UBUS_ENABLE) { watch_ubus_cleanup(); }
     #endif  // UBUS
     watch_network_cleanup();
     watch_file_cleanup();

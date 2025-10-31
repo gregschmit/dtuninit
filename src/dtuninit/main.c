@@ -33,8 +33,10 @@
 #define DEFAULT_BPF_PATH "/usr/bin/" DEFAULT_BPF_FN
 
 #define VERSION_S "dtuninit " VERSION
+
 #define USAGE_HEADER_S VERSION_S "\nThe Dynamic Tunnel Initiator\n\n"
-#define GLOBAL_GETOPT_S "+dh"  // Leading `+` disables GNU argv mutation behavior.
+
+#define GLOBAL_GETOPT_S "+dh"  // Leading `+` disables GNU argv mutation.
 #define GLOBAL_OPTIONS_S \
     "  -d  Enable debug logging.\n" \
     "  -h  Show usage."
@@ -48,12 +50,21 @@
     "  help      Show usage.\n" \
     "\n" \
     "Global Options:\n" GLOBAL_OPTIONS_S
-#define START_GETOPT_S GLOBAL_GETOPT_S "+B:C:i:"  // Leading `+` disables GNU argv mutation.
+
+#ifdef UBUS
+#define START_GETOPT_S GLOBAL_GETOPT_S "B:C:Ui:"
+#define START_GETOPT_UBUS_OPTION_S \
+    "  -U         Enable UBUS integration (detect clients from hostapd/RADIUS).\n"
+#else
+#define START_GETOPT_S GLOBAL_GETOPT_S "B:C:i:"
+#define START_GETOPT_UBUS_OPTION_S ""
+#endif // UBUS
 #define START_OPTIONS_S \
     "  -B <FILE>  Set BPF object file (default: `" DEFAULT_BPF_FN "` from current dir or\n" \
     "             `" DEFAULT_BPF_PATH "`).\n" \
     "  -C <FILE>  Set clients JSON file (default: `" DEFAULT_CLIENTS_FN "` from\n" \
     "             current dir or `" DEFAULT_CLIENTS_PATH "`).\n" \
+    START_GETOPT_UBUS_OPTION_S \
     "  -i <IF>    Bind to selected interface (can be specified multiple times).\n"
 #define START_USAGE_S USAGE_HEADER_S \
     "Usage: dtuninit start <OPTIONS>\n" \
@@ -61,6 +72,7 @@
     "Start Options:\n" START_OPTIONS_S \
     "\n" \
     "Global Options:\n" GLOBAL_OPTIONS_S
+
 #define CLIENT_GETOPT_S GLOBAL_GETOPT_S "C:"
 #define CLIENT_OPTIONS_S \
     "  -C <FILE>  Set clients JSON file (default: `" DEFAULT_CLIENTS_FN "` from\n" \
@@ -76,6 +88,7 @@
     "Client Options:\n" CLIENT_OPTIONS_S \
     "\n" \
     "Global Options:\n" GLOBAL_OPTIONS_S
+
 #define CLIENT_INSERT_GETOPT_S CLIENT_GETOPT_S "p:P:v:"
 #define CLIENT_INSERT_OPTIONS_S \
     "  -p <PROTOCOL>  Set the protocol (e.g., `gre`, `gre/udp`).\n" \
@@ -99,6 +112,7 @@ static char *IFS_PTRS[MAX_IFS + 1] = {0};  // Must be NULL-terminated.
 
 char BPF_PATH[PATH_MAX] = "";
 char CLIENTS_PATH[PATH_MAX] = "";
+bool UBUS_ENABLE = false;
 
 static char *INSERT_REMOVE_MAC = NULL;
 static char *INSERT_PROTOCOL = NULL;
@@ -293,6 +307,12 @@ void do_start_getopt(int *rem_argc, char ***rem_argv) {
                 }
                 break;
             }
+            #ifdef UBUS
+            case 'U': {
+                UBUS_ENABLE = true;
+                break;
+            }
+            #endif
             case 'i': {
                 if (optarg[0] == '\0') {
                     log_error("Interface name cannot be blank.");
