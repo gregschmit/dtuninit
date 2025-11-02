@@ -7,8 +7,6 @@ the encapsulation and decapsulation of packets between the client and the peer (
 
 ## TODO
 
-- Modify watch logic to reload when interfaces change (needed for being a reasonable daemon).
-- Add ubus support to support conversion of clients with radius attributes to clients file entries.
 - Fix cross compiling with ubox/ubus libs.
 - Fix static building on Debian: `undefined symbol: eu_search_tree_init`.
 - Implement GRE over UDP to support NAT.

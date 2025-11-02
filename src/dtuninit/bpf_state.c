@@ -268,11 +268,11 @@ bool bpf_state__reload_interfaces(BPFState *s) {
         // Attach TCI program.
         s->links[s->n_links] = bpf_program__attach_tcx(prog_tci, s->ifindexes[i], NULL);
         if (s->links[s->n_links]) {
-            log_info("Attached TC ingress prog to if %s (ifindex %d).", s->ifs[i], s->ifindexes[i]);
+            log_info("Attached TC/i prog to if %s (ifindex %d).", s->ifs[i], s->ifindexes[i]);
             s->n_links++;
         } else {
             log_errno("bpf_program__attach_tcx");
-            log_error("Failed to attach TC ingress prog to if %s.", s->ifs[i]);
+            log_error("Failed to attach TC/i prog to if %s.", s->ifs[i]);
             continue;
         }
     }
